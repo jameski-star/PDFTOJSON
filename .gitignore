@@ -1,0 +1,15 @@
+# virtualenv created by install.sh
+.venv/
+
+# generated launcher (machine-specific absolute paths)
+/pdf2json
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# local conversion outputs
+*.out.json

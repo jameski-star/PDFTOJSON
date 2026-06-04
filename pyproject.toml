@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2json"
+version = "1.0.0"
+description = "Extract every table from a PDF into a structured JSON file."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = ["pdfplumber>=0.11"]
+
+[project.scripts]
+pdf2json = "pdf2json:main_cli"
+
+[tool.setuptools]
+py-modules = ["pdf2json"]
