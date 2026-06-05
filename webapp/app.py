@@ -29,30 +29,32 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+print(f"==> PROJECT_ROOT: {PROJECT_ROOT}", flush=True)
+print(f"==> sys.path: {sys.path[:3]}", flush=True)
+
 try:
     import pdf2json  # noqa: E402  (path set above)
     print(f"✓ Successfully imported pdf2json from {PROJECT_ROOT}", flush=True)
 except ImportError as e:
-    print(f"✗ FATAL: Could not import pdf2json from {PROJECT_ROOT}: {e}", file=sys.stderr, flush=True)
-    print(f"  sys.path: {sys.path}", file=sys.stderr, flush=True)
-    print(f"  Files in {PROJECT_ROOT}:", file=sys.stderr, flush=True)
+    print(f"✗ FATAL: Could not import pdf2json: {e}", file=sys.stderr, flush=True)
+    print(f"  Repo files:", file=sys.stderr, flush=True)
     try:
-        for item in Path(PROJECT_ROOT).iterdir():
-            print(f"    - {item.name}", file=sys.stderr, flush=True)
+        for item in sorted(Path(PROJECT_ROOT).iterdir()):
+            if not item.name.startswith('.'):
+                size = "(dir)" if item.is_dir() else f"{item.stat().st_size} bytes"
+                print(f"    - {item.name} {size}", file=sys.stderr, flush=True)
     except Exception as list_err:
-        print(f"    (could not list: {list_err})", file=sys.stderr, flush=True)
+        print(f"    (error listing: {list_err})", file=sys.stderr, flush=True)
     raise
 
 MAX_MB = 50  # reject uploads larger than this
 
 # Absolute base URL for canonical links, Open Graph tags, and the sitemap.
-# Override per-deployment, e.g. SITE_URL=https://pdf2json.example.com.
 SITE_URL = os.environ.get("SITE_URL", "https://pdf2json-j5oh.onrender.com/").rstrip("/")
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
-# Log that the app initialized
 print(f"✓ Flask app initialized. SITE_URL={SITE_URL}", flush=True)
 
 
@@ -111,9 +113,11 @@ def convert():
             tmp.close()
             print(f"Processing: {name}", flush=True)
             sections = pdf2json.extract_sections(tmp.name, spell=spell, quiet=True)
-            print(f"✓ Processed: {len(sections)} sections", flush=True)
-        except Exception as exc:  # noqa: BLE001 — surface any parse error to the UI
-            print(f"✗ Error processing PDF: {exc}", file=sys.stderr, flush=True)
+            print(f"✓ Processed: {len(sections)} sections, {sum(len(s['rows']) for s in sections)} rows", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"✗ PDF processing error: {exc}", file=sys.stderr, flush=True)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             return jsonify(error=f"Could not read this PDF: {exc}"), 422
         finally:
             try:
@@ -137,7 +141,7 @@ def convert():
             result=result,
         )
     except Exception as e:
-        print(f"✗ CRITICAL ERROR in /convert: {e}", file=sys.stderr, flush=True)
+        print(f"✗ CRITICAL /convert error: {e}", file=sys.stderr, flush=True)
         import traceback
         traceback.print_exc(file=sys.stderr)
         return jsonify(error=f"Internal server error: {e}"), 500
@@ -145,8 +149,7 @@ def convert():
 
 @app.route("/download", methods=["POST"])
 def download():
-    """Return the posted JSON as a downloadable file (so the browser can
-    save large results without holding them in a data: URL)."""
+    """Return the posted JSON as a downloadable file."""
     payload = request.get_json(silent=True) or {}
     result = payload.get("result")
     filename = payload.get("filename") or "tables.json"
@@ -171,7 +174,7 @@ def internal_error(e):
     print(f"✗ 500 Error: {e}", file=sys.stderr, flush=True)
     import traceback
     traceback.print_exc(file=sys.stderr)
-    return jsonify(error="Internal server error. Check logs for details."), 500
+    return jsonify(error="Internal server error. Check logs."), 500
 
 
 if __name__ == "__main__":
