@@ -6,7 +6,7 @@ services:
     name: pdf2json
     runtime: python
     plan: free
-    buildCommand: pip install -r webapp/requirements.txt && pip install pdfplumber>=0.11 pyspellchecker>=0.8
+    buildCommand: cd $RENDER_BUILD_DIR && pip install -r webapp/requirements.txt
     startCommand: gunicorn --chdir webapp app:app -b 0.0.0.0:$PORT --timeout 120 --workers 2
     autoDeploy: true
     envVars:
