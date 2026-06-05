@@ -1,0 +1,4 @@
+# Web UI dependencies (on top of the core converter).
+pdfplumber>=0.11
+pyspellchecker>=0.8
+flask>=3.0

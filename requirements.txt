@@ -1,1 +1,2 @@
 pdfplumber>=0.11
+pyspellchecker>=0.8

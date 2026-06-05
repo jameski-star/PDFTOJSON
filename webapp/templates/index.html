@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>pdf2json — extract tables from a PDF</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg:        #0F172A;
+      --panel:     #1E293B;
+      --panel-2:   #334155;
+      --border:    #334155;
+      --text:      #F8FAFC;
+      --muted:     #94A3B8;
+      --accent:    #22C55E;
+      --accent-dk: #16A34A;
+      --danger:    #F87171;
+      --radius:    14px;
+      --maxw:      720px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Space Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: clamp(20px, 5vw, 64px) 20px;
+    }
+
+    main { width: 100%; max-width: var(--maxw); }
+
+    /* ---- header ---- */
+    header { text-align: center; margin-bottom: 40px; }
+
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      font-size: clamp(28px, 6vw, 40px);
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    .logo .brace { color: var(--accent); }
+
+    .tagline {
+      color: var(--muted);
+      margin: 14px auto 0;
+      max-width: 46ch;
+      font-size: 15px;
+    }
+
+    /* ---- dropzone ---- */
+    .dropzone {
+      border: 2px dashed var(--panel-2);
+      border-radius: var(--radius);
+      background: var(--panel);
+      padding: clamp(32px, 8vw, 56px) 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s ease, background .2s ease;
+    }
+    .dropzone:hover,
+    .dropzone:focus-visible { border-color: var(--accent); background: #1c2c44; }
+    .dropzone.dragover {
+      border-color: var(--accent);
+      background: #16352a;
+    }
+    .dropzone:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(34,197,94,.35); }
+
+    .dropzone svg { width: 44px; height: 44px; color: var(--accent); margin-bottom: 14px; }
+    .dropzone .big { font-size: 18px; font-weight: 700; }
+    .dropzone .small { color: var(--muted); font-size: 13px; margin-top: 8px; }
+    .dropzone .browse { color: var(--accent); text-decoration: underline; }
+
+    .file-chip {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      justify-content: center;
+      margin-top: 18px;
+      color: var(--text);
+      font-size: 14px;
+    }
+    .file-chip.show { display: flex; }
+    .file-chip svg { width: 18px; height: 18px; color: var(--accent); }
+
+    /* ---- convert button ---- */
+    .actions { margin-top: 28px; text-align: center; }
+
+    button {
+      font-family: inherit;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #062012;
+      border: none;
+      border-radius: 10px;
+      padding: 16px 40px;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      transition: background .2s ease, transform .05s ease;
+    }
+    .btn-primary:hover { background: var(--accent-dk); }
+    .btn-primary:active { transform: translateY(1px); }
+    .btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(34,197,94,.4); }
+    .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(6,32,18,.4);
+      border-top-color: #062012;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      display: none;
+    }
+    .btn-primary.loading .spinner { display: inline-block; }
+    .btn-primary.loading .label-run { display: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ---- messages ---- */
+    .msg {
+      display: none;
+      margin-top: 22px;
+      padding: 14px 16px;
+      border-radius: 10px;
+      font-size: 14px;
+    }
+    .msg.error { display: block; background: #3a1d20; color: var(--danger); border: 1px solid #5a2a2e; }
+
+    /* ---- result ---- */
+    .result { display: none; margin-top: 32px; }
+    .result.show { display: block; }
+
+    .stats {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+    .stat {
+      flex: 1 1 120px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      text-align: center;
+    }
+    .stat .num { font-size: 28px; font-weight: 700; color: var(--accent); }
+    .stat .lbl { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+
+    .result-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .result-head h2 { font-size: 15px; margin: 0; color: var(--muted); font-weight: 400; }
+
+    .btn-download {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 9px 16px;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: background .2s ease, color .2s ease;
+    }
+    .btn-download:hover { background: var(--accent); color: #062012; }
+    .btn-download:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(34,197,94,.4); }
+    .btn-download svg { width: 16px; height: 16px; }
+
+    pre {
+      background: #0b1322;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      overflow: auto;
+      max-height: 420px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #cbd5e1;
+      margin: 0;
+    }
+    pre .truncated { color: var(--muted); }
+
+    footer {
+      margin-top: 48px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+    footer code { color: var(--text); }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="logo"><span class="brace">{</span> pdf2json <span class="brace">}</span></div>
+      <p class="tagline">Drop a PDF and extract every table into clean, structured JSON — titles, headings, and rows.</p>
+    </header>
+
+    <!-- dropzone -->
+    <div class="dropzone" id="dropzone" role="button" tabindex="0"
+         aria-label="Choose a PDF file or drop one here">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="17 8 12 3 7 8" />
+        <line x1="12" y1="3" x2="12" y2="15" />
+      </svg>
+      <div class="big">Drop a PDF here</div>
+      <div class="small">or <span class="browse">browse</span> &middot; max {{ max_mb }} MB</div>
+    </div>
+    <input type="file" id="fileInput" accept="application/pdf,.pdf" hidden />
+
+    <div class="file-chip" id="fileChip">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+      </svg>
+      <span id="fileName"></span>
+    </div>
+
+    <div class="actions">
+      <button class="btn-primary" id="convertBtn" disabled>
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="label-run">Convert</span>
+      </button>
+    </div>
+
+    <div class="msg error" id="errorBox" role="alert"></div>
+
+    <!-- result -->
+    <section class="result" id="result" aria-live="polite">
+      <div class="stats">
+        <div class="stat"><div class="num" id="tableCount">0</div><div class="lbl">sections</div></div>
+        <div class="stat"><div class="num" id="rowCount">0</div><div class="lbl">rows</div></div>
+      </div>
+      <div class="result-head">
+        <h2 id="resultName">result.json</h2>
+        <button class="btn-download" id="downloadBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          Download JSON
+        </button>
+      </div>
+      <pre id="preview"></pre>
+    </section>
+
+    <footer>
+      Runs locally &middot; powered by the same <code>extract_tables()</code> as the CLI.
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      const dropzone = document.getElementById("dropzone");
+      const fileInput = document.getElementById("fileInput");
+      const fileChip = document.getElementById("fileChip");
+      const fileName = document.getElementById("fileName");
+      const convertBtn = document.getElementById("convertBtn");
+      const errorBox = document.getElementById("errorBox");
+      const result = document.getElementById("result");
+      const preview = document.getElementById("preview");
+      const tableCount = document.getElementById("tableCount");
+      const rowCount = document.getElementById("rowCount");
+      const resultName = document.getElementById("resultName");
+      const downloadBtn = document.getElementById("downloadBtn");
+
+      let selectedFile = null;
+      let lastResult = null;
+      let lastFilename = "tables.json";
+
+      function showError(text) {
+        errorBox.textContent = text;
+        errorBox.style.display = "block";
+      }
+      function clearError() { errorBox.style.display = "none"; }
+
+      function pickFile(file) {
+        if (!file) return;
+        if (!file.name.toLowerCase().endsWith(".pdf")) {
+          showError("Please choose a .pdf file.");
+          return;
+        }
+        clearError();
+        result.classList.remove("show");
+        selectedFile = file;
+        fileName.textContent = file.name;
+        fileChip.classList.add("show");
+        convertBtn.disabled = false;
+      }
+
+      // open file dialog
+      dropzone.addEventListener("click", () => fileInput.click());
+      dropzone.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+      });
+      fileInput.addEventListener("change", (e) => pickFile(e.target.files[0]));
+
+      // drag & drop
+      ["dragenter", "dragover"].forEach((evt) =>
+        dropzone.addEventListener(evt, (e) => {
+          e.preventDefault();
+          dropzone.classList.add("dragover");
+        })
+      );
+      ["dragleave", "drop"].forEach((evt) =>
+        dropzone.addEventListener(evt, (e) => {
+          e.preventDefault();
+          dropzone.classList.remove("dragover");
+        })
+      );
+      dropzone.addEventListener("drop", (e) => {
+        const file = e.dataTransfer.files[0];
+        pickFile(file);
+      });
+
+      // convert
+      convertBtn.addEventListener("click", async () => {
+        if (!selectedFile) return;
+        clearError();
+        result.classList.remove("show");
+        convertBtn.disabled = true;
+        convertBtn.classList.add("loading");
+
+        const form = new FormData();
+        form.append("file", selectedFile);
+
+        try {
+          const res = await fetch("/convert", { method: "POST", body: form });
+          const data = await res.json();
+          if (!res.ok) {
+            showError(data.error || "Conversion failed.");
+            return;
+          }
+          lastResult = data.result;
+          lastFilename = data.filename;
+          tableCount.textContent = data.section_count;
+          rowCount.textContent = data.row_count;
+          resultName.textContent = data.filename;
+
+          // preview: pretty JSON, truncated if huge
+          const full = JSON.stringify(data.result, null, 2);
+          const LIMIT = 60000;
+          if (full.length > LIMIT) {
+            preview.textContent = full.slice(0, LIMIT);
+            const note = document.createElement("span");
+            note.className = "truncated";
+            note.textContent = "\n\n… preview truncated — download for the full file.";
+            preview.appendChild(note);
+          } else {
+            preview.textContent = full;
+          }
+          result.classList.add("show");
+        } catch (err) {
+          showError("Network error: " + err.message);
+        } finally {
+          convertBtn.classList.remove("loading");
+          convertBtn.disabled = false;
+        }
+      });
+
+      // download
+      downloadBtn.addEventListener("click", () => {
+        if (!lastResult) return;
+        const blob = new Blob([JSON.stringify(lastResult, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = lastFilename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      });
+    })();
+  </script>
+</body>
+</html>
