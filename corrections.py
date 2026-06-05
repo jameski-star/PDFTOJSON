@@ -6,12 +6,18 @@ done, this pass fixes *genuine* misspellings (e.g. "Univrsity" -> "University")
 while doing its best to leave proper nouns, codes, and numbers untouched.
 
 It is deliberately conservative:
-  - tokens with any digit are never touched (codes, cutoffs, years);
+  - only pure letter-tokens are touched; anything with a digit or punctuation
+    (codes, cutoffs, "(AGRIBUSINESS", "CO-OPERATIVE") is left exactly as-is,
+    because the spell checker silently strips that punctuation;
   - tokens shorter than 4 characters are skipped;
-  - all-caps acronyms of 5 chars or fewer are skipped;
+  - ALL-CAPS tokens are never touched — in tabular data they are proper nouns
+    or acronyms, and "correcting" them turns real names into the nearest
+    dictionary word (MASENO -> MISENO, GARISSA -> MARISSA);
   - a token is only replaced when the spell checker is confident AND the
-    suggestion is within edit distance 1 of the original — long proper nouns
-    (KENYATTA, CHUKA, ...) have no near dictionary match, so they survive.
+    suggestion is within edit distance 1 of the original.
+
+Net effect: mixed-case body-text typos ("Univrsity" -> "University") are fixed
+while names, codes and acronyms survive intact.
 
 If `pyspellchecker` is not installed the pass is skipped with a warning, so the
 converter still runs.
@@ -38,12 +44,19 @@ def _looks_correctable(token):
     """True if we are willing to consider correcting this token at all."""
     if len(token) < 4:
         return False
-    if any(ch.isdigit() for ch in token):
+    # Only pure letter-tokens are touched.  Anything carrying punctuation
+    # (parentheses, commas, ``&``, hyphens, slashes — common in programme
+    # titles like ``(AGRIBUSINESS MANAGEMENT)``) is left exactly as-is, because
+    # the spell checker silently strips that punctuation when it "corrects".
+    if not token.isalpha():
         return False
-    if not any(ch.isalpha() for ch in token):
-        return False
-    # all-caps short acronyms: leave alone (e.g. "ISO", "BA", "BSC")
-    if token.isupper() and len(token) <= 5:
+    # All-caps tokens are proper nouns or acronyms in tabular data
+    # (institution names, ``ISO``, ``IT``).  Correcting them turns real names
+    # into the nearest dictionary word (``MASENO`` -> ``MISENO``,
+    # ``GARISSA`` -> ``MARISSA``), so never touch them.  Genuine body-text
+    # misspellings (``Univrsity`` -> ``University``) are mixed-case and still
+    # corrected.
+    if token.isupper():
         return False
     if token.lower() in _PROTECTED:
         return False

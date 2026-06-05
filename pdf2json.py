@@ -227,6 +227,55 @@ def detect_columns(lines):
     return _merge_nearby_bands(merged, max_gap=5.0)
 
 
+def _columns_from_edges(page, lines):
+    """Derive column bands from the table's *drawn* vertical borders.
+
+    Many "borderless-looking" PDFs actually draw each cell as a filled
+    rectangle, so pdfplumber reports no ``page.lines`` but plenty of vertical
+    ``page.edges``.  Those edges are the ground truth for column boundaries —
+    far more reliable than inferring columns from whitespace, and immune to the
+    left-vs-right text-alignment ambiguity that whitespace bands suffer from.
+
+    Returns a list of (left, right) bands, or ``None`` when the page has no
+    usable vertical grid (≤ 2 boundaries).  A boundary that a large share of
+    rows draw a word *across* is dropped, because that means the cells either
+    side are merged in the text layer (e.g. a ``#`` counter printed flush
+    against the code, emitted as one token ``11105101``)."""
+    vedges = [e for e in getattr(page, "edges", []) if e.get("orientation") == "v"]
+    if not vedges:
+        return None
+
+    # Cluster edge x-positions that fall within 3 pt of each other.
+    xs = sorted(e["x0"] for e in vedges)
+    clusters = []
+    for x in xs:
+        if clusters and x - clusters[-1][-1] <= 3.0:
+            clusters[-1].append(x)
+        else:
+            clusters.append([x])
+    # Keep clusters with enough support to be a real rule, not a stray mark.
+    boundaries = sorted(sum(c) / len(c) for c in clusters if len(c) >= 3)
+    if len(boundaries) < 3:
+        return None
+
+    # Drop interior boundaries that cut through merged-cell tokens: if many
+    # rows have a word straddling the boundary, the two columns are fused in
+    # the text and must stay one band.
+    n_lines = max(1, len(lines))
+    kept = [boundaries[0]]
+    for b in boundaries[1:-1]:
+        straddling = sum(
+            1 for ln in lines
+            if any(w["x0"] < b - 0.5 and w["x1"] > b + 0.5 for w in ln)
+        )
+        if straddling / n_lines > 0.30:
+            continue
+        kept.append(b)
+    kept.append(boundaries[-1])
+
+    return [(kept[i], kept[i + 1]) for i in range(len(kept) - 1)]
+
+
 def _band_distance(band, x):
     left, right = band
     if x < left:
@@ -242,11 +291,34 @@ def _band_of(word, bands):
     return min(range(len(bands)), key=lambda i: _band_distance(bands[i], center))
 
 
+def _band_of_overlap(word, bands):
+    """Index of the band a word belongs to, by greatest horizontal overlap.
+
+    Overlap is alignment-agnostic: it works for left-aligned text columns and
+    right-aligned numeric columns alike, so a long institution name's trailing
+    word and a right-aligned ``-`` placeholder each land in the column whose
+    cell actually contains them.  This is reliable only when the bands are the
+    true cell widths (e.g. from drawn borders); with narrow whitespace-derived
+    bands a word may overlap none, so we fall back to the nearest band by the
+    word's centre."""
+    x0, x1 = word["x0"], word["x1"]
+    best_i, best_ov = 0, 0.0
+    for i, (left, right) in enumerate(bands):
+        ov = min(right, x1) - max(left, x0)
+        if ov > best_ov:
+            best_ov, best_i = ov, i
+    if best_ov > 0:
+        return best_i
+    center = (x0 + x1) / 2.0
+    return min(range(len(bands)), key=lambda i: _band_distance(bands[i], center))
+
+
 def line_to_cells(line, bands):
-    """Distribute a line's words into column bands by word centre."""
+    """Distribute a line's words into column bands by greatest horizontal
+    overlap with each band."""
     cells = [[] for _ in bands]
     for w in line:
-        cells[_band_of(w, bands)].append(w["text"])
+        cells[_band_of_overlap(w, bands)].append(w["text"])
     return [clean(" ".join(c)) for c in cells]
 
 
@@ -380,6 +452,28 @@ def is_heading(line, bands, page_width=None, doc_has_bold=True, header_size=None
                 if at_size / len(line) >= 0.8:
                     return True
     return False
+
+
+def _bands_from_header(header_words):
+    """Derive column bands directly from header-word x-positions.
+
+    Groups words whose x-ranges overlap or nearly touch into column bands.
+    Used as a fallback when the data-row band detection produces too few
+    bands (because some columns are empty in the sampled rows)."""
+    if not header_words:
+        return []
+    groups = []
+    for w in sorted(header_words, key=lambda w: w["x0"]):
+        if not groups:
+            groups.append([w])
+            continue
+        last = groups[-1][-1]
+        # Words overlap or are within 5 pt → same column group.
+        if w["x0"] - last["x1"] <= 5:
+            groups[-1].append(w)
+        else:
+            groups.append([w])
+    return [(min(w["x0"] for w in g), max(w["x1"] for w in g)) for g in groups]
 
 
 def labels_for_bands(header_words, bands):
@@ -518,9 +612,11 @@ def _read_pages(pdf, on_page=None):
                 sz = w.get("size", 0)
                 if sz > 0:
                     all_sizes.append(sz)
+            lines = group_lines(words) if words else []
             pages.append({"page": page_number, "kind": "border",
                           "width": page.width,
-                          "lines": group_lines(words) if words else []})
+                          "lines": lines,
+                          "edge_bands": _columns_from_edges(page, lines)})
 
     # Compute header font size for non-bold documents.
     # Header rows typically use the largest consistent font size; body text
@@ -611,9 +707,31 @@ def _border_contexts(pages, chrome):
     return contexts
 
 
-def _sections_from_context(ctx):
-    """Build sections for one header context: compute bands from its data lines,
-    name them with the bold header, then split into headings + rows."""
+def _context_edge_bands(ctx, page_edges):
+    """The drawn-border column bands shared by the pages in this context.
+
+    Each page reports its own grid; for a table continued across pages the grids
+    are identical, so we take the layout that the most pages agree on."""
+    if not page_edges:
+        return None
+    sigs = defaultdict(int)
+    by_sig = {}
+    for page, _ln in ctx["lines"]:
+        eb = page_edges.get(page)
+        if eb and len(eb) >= 2:
+            sig = tuple(round(x, 1) for b in eb for x in b)
+            sigs[sig] += 1
+            by_sig[sig] = eb
+    if not sigs:
+        return None
+    best = max(sigs, key=sigs.get)
+    return by_sig[best]
+
+
+def _sections_from_context(ctx, page_edges=None):
+    """Build sections for one header context: compute bands from its data lines
+    (preferring drawn borders), name them with the bold header, then split into
+    headings + rows."""
     data_lines = [ln for _, ln in ctx["lines"]]
     if not data_lines:
         return []
@@ -630,7 +748,22 @@ def _sections_from_context(ctx):
     if len(sample) > 200:
         step = len(sample) // 200
         sample = sample[::step]
-    bands = detect_columns(sample)
+
+    # Drawn cell borders are ground truth for column boundaries; fall back to
+    # whitespace-corridor detection only when the page has no usable grid.
+    bands = _context_edge_bands(ctx, page_edges)
+    if not bands or len(bands) < 2:
+        bands = detect_columns(sample)
+
+        # If the header suggests more columns than the data bands found
+        # (common when trailing columns are empty in sampled rows), use the
+        # header word positions to fill in the missing bands.
+        header_words = ctx.get("header") or []
+        if header_words and len(bands) < len(_bands_from_header(header_words)):
+            hdr_bands = _bands_from_header(header_words)
+            if len(hdr_bands) > len(bands):
+                bands = hdr_bands
+
     labels = labels_for_bands(ctx["header"], bands) if len(bands) >= 2 else \
         make_headings(["column_1"]) if bands else []
     page_width = ctx.get("width")
@@ -654,7 +787,36 @@ def _sections_from_context(ctx):
                 key = labels[i] if i < len(labels) else f"column_{i + 1}"
                 row[key] = cells[i] if i < len(cells) else ""
             section["rows"].append(row)
+
+    _drop_empty_columns(sections, labels)
     return sections
+
+
+def _drop_empty_columns(sections, labels):
+    """Remove columns that are empty in every row across this context.
+
+    Drawn-border grids often include a trailing margin cell (or a separator the
+    text never fills); detecting columns from borders rather than content means
+    such a column shows up with a placeholder label and blank values.  Dropping
+    it keeps the output to the columns that actually carry data."""
+    if not labels:
+        return
+    non_empty = set()
+    for sec in sections:
+        for row in sec.get("rows", []):
+            for key, val in row.items():
+                if val:
+                    non_empty.add(key)
+    drop = [lbl for lbl in labels if lbl not in non_empty]
+    if not drop:
+        return
+    kept = [lbl for lbl in labels if lbl in non_empty]
+    labels[:] = kept
+    for sec in sections:
+        sec["labels"] = list(kept)
+        for row in sec.get("rows", []):
+            for lbl in drop:
+                row.pop(lbl, None)
 
 
 def extract_sections(pdf_path, spell=True, quiet=False, on_page=None):
@@ -662,19 +824,40 @@ def extract_sections(pdf_path, spell=True, quiet=False, on_page=None):
         pages = _read_pages(pdf, on_page=on_page)
 
     chrome = _running_chrome(pages)
+    page_edges = {pd["page"]: pd.get("edge_bands")
+                  for pd in pages if pd["kind"] == "border"}
     sections = []
     for pd in pages:
         if pd["kind"] == "ruled":
             sections.extend(pd["sections"])
     # borderless sections, in document order, with cross-page header carry-over
     for ctx in _border_contexts(pages, chrome):
-        sections.extend(_sections_from_context(ctx))
+        sections.extend(_sections_from_context(ctx, page_edges))
 
     # drop empty sections (a heading with no rows is still kept; truly empty ones go)
     sections = [s for s in sections if s["rows"] or s["heading"]]
     _clean_labels(sections)
+    _deglue_row_numbers(sections)
     apply_corrections(sections, enabled=spell, quiet=quiet)
+    _order_rows(sections)
     return sections
+
+
+def _order_rows(sections):
+    """Reorder each row's keys to match its section's ``labels``.
+
+    Earlier passes (label cleanup, relabelling) rebuild keys via pop/reinsert,
+    which can leave a column out of order (e.g. ``PROG CODE`` drifting to the
+    end).  Reordering here keeps the JSON columns in their natural left-to-right
+    order; any unexpected extra keys are appended after the known labels."""
+    for sec in sections:
+        labels = sec.get("labels") or []
+        for idx, row in enumerate(sec.get("rows", [])):
+            ordered = {lbl: row[lbl] for lbl in labels if lbl in row}
+            for k, v in row.items():        # keep any stragglers, in place
+                if k not in ordered:
+                    ordered[k] = v
+            sec["rows"][idx] = ordered
 
 
 def _clean_labels(sections):
@@ -740,6 +923,76 @@ def _clean_labels(sections):
             for row in sec.get("rows", []):
                 row.pop(lbl, None)
         break  # only strip one such column
+
+
+def _deglue_row_numbers(sections):
+    """Split a row-number that is glued onto the first column's value.
+
+    Some PDFs print a ``#`` counter column flush against the next column with no
+    whitespace, so the text layer emits a single token like ``11105101`` =
+    row ``1`` + code ``1105101``.  Band detection can't separate them because
+    they're one word, so the counter ends up prepended to every first-column
+    value.
+
+    This is detected — never assumed — from the data itself: within a section
+    the counter restarts at 1 and increments, so value *i* (1-based) must begin
+    with ``str(i)``, and the remainder (the real value) is fixed-width.  That
+    ascending-prefix-plus-constant-width pattern across whole sections does not
+    occur by chance, so we only de-glue when a strong majority of multi-row
+    sections agree on one remainder width.  Pure value columns (IDs, codes that
+    merely start with 1) fail the ascending check and are left untouched."""
+    if not sections:
+        return
+
+    first_label = (sections[0].get("labels") or [None])[0]
+    if not first_label:
+        return
+
+    def section_width(sec):
+        """Remainder width if this section matches the glued pattern, else None."""
+        rows = sec.get("rows", [])
+        if not rows:
+            return None
+        widths = set()
+        for i, row in enumerate(rows):
+            val = row.get(first_label, "")
+            prefix = str(i + 1)
+            if not val.startswith(prefix):
+                return None
+            rem = val[len(prefix):]
+            if len(rem) < 4:          # too short to be a real value column
+                return None
+            widths.add(len(rem))
+        return widths.pop() if len(widths) == 1 else None
+
+    # Gather evidence from sections with ≥2 rows (a single row is ambiguous —
+    # any value "starts with 1").
+    confirmed_widths = defaultdict(int)
+    multi_row = 0
+    for sec in sections:
+        if len(sec.get("rows", [])) < 2:
+            continue
+        multi_row += 1
+        w = section_width(sec)
+        if w is not None:
+            confirmed_widths[w] += 1
+
+    if not confirmed_widths:
+        return
+    width = max(confirmed_widths, key=confirmed_widths.get)
+    # Require the pattern to dominate the multi-row sections before trusting it.
+    if multi_row and confirmed_widths[width] / multi_row < 0.8:
+        return
+
+    # Apply: strip the leading counter wherever a value is exactly
+    # str(i+1) + <width-char value>.  The length check keeps genuine values
+    # (which would have the wrong total length) safe.
+    for sec in sections:
+        for i, row in enumerate(sec.get("rows", [])):
+            val = row.get(first_label, "")
+            prefix = str(i + 1)
+            if val.startswith(prefix) and len(val) == len(prefix) + width:
+                row[first_label] = val[len(prefix):]
 
 
 # ---------------------------------------------------------------------------

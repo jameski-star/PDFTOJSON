@@ -29,6 +29,11 @@ preview and download the JSON).
 
 ### How it reads a page
 
+- **Column boundaries** come from the table's **drawn cell borders** when the
+  PDF has them — even tables whose cells are filled rectangles rather than ruled
+  lines. Borders are the ground truth, so each value lands in the right column
+  regardless of whether it's left-aligned text or a right-aligned number. Pages
+  with no grid fall back to detecting columns from the whitespace between values.
 - **Column labels** are found by their **bold font**, and are **carried forward**
   to later pages that repeat the same columns but don't reprint the header — so a
   48-page table whose header only appears on page 1 stays fully labelled.
@@ -38,9 +43,12 @@ preview and download the JSON).
 - Words are read in the PDF's character-stream order, which **untangles
   overlapping headers** (e.g. `CODE`+`INSTITUTION` interleaving into the garbled
   `COIDNESTITUTION`) instead of scrambling them.
+- A **glued row-number column** (a `#` counter printed flush against the next
+  column, so the text layer emits `11105101` for row 1 + code `1105101`) is
+  detected from the data and split back apart.
 - A **dictionary-correction pass** fixes genuine misspellings (e.g.
-  `Univrsity` → `University`) while protecting codes, numbers, and proper nouns.
-  Disable it with `--no-spell`.
+  `Univrsity` → `University`) while leaving all-caps proper nouns, codes,
+  numbers, and anything with punctuation untouched. Disable it with `--no-spell`.
 - **Ruled tables** (with drawn grid lines) are read directly and emitted as
   sections too.
 
