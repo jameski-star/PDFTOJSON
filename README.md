@@ -36,16 +36,22 @@ preview and download the JSON).
   with no grid fall back to detecting columns from the whitespace between values.
 - **Column labels** are found by their **bold font**, and are **carried forward**
   to later pages that repeat the same columns but don't reprint the header — so a
-  48-page table whose header only appears on page 1 stays fully labelled.
-- **Section titles** (centred lines that aren't rows) become their own `heading`
-  field — never folded into a row.
-- **Data rows** become `label: value` sub-objects.
+  48-page table whose header only appears on page 1 stays fully labelled. A
+  document made of **many small tables that share one column layout** (each
+  introduced by its own title) keeps a single consistent set of labels.
+- **Section titles** are recognised by their **red colour** (and, as a fallback,
+  bold or larger type) and become their own `heading` field — never folded into
+  a row. This is also what tells a title apart from a wrapped cell.
+- **Data rows** become `label: value` sub-objects. A row whose long cells
+  **wrap onto two or three lines** (a full institution or programme name) is
+  stitched back into one row rather than split into phantom rows.
 - Words are read in the PDF's character-stream order, which **untangles
   overlapping headers** (e.g. `CODE`+`INSTITUTION` interleaving into the garbled
   `COIDNESTITUTION`) instead of scrambling them.
 - A **glued row-number column** (a `#` counter printed flush against the next
   column, so the text layer emits `11105101` for row 1 + code `1105101`) is
-  detected from the data and split back apart.
+  detected from the data and split back apart. A **value fused to the next
+  cell** (`40.571MAT`, `35.796-`) is likewise split at the number boundary.
 - A **dictionary-correction pass** fixes genuine misspellings (e.g.
   `Univrsity` → `University`) while leaving all-caps proper nouns, codes,
   numbers, and anything with punctuation untouched. Disable it with `--no-spell`.

@@ -4,14 +4,23 @@ pdf2json — extract tables from a PDF into structured JSON, grouped into sectio
 
 The extractor understands three kinds of line and keeps them separate:
 
-  * column labels   — the bold header row (e.g. "PROG CODE", "INSTITUTION NAME").
-                      Column labels are detected by their **bold font** and are
-                      carried forward to later pages that repeat the same columns
-                      but don't reprint the header.
-  * section heading — a centred title that isn't a row (e.g. "BACHELOR OF ARTS").
-                      It becomes its own "heading" field, never mixed into a row.
+  * column labels   — the header row (e.g. "PROG CODE", "INSTITUTION NAME").
+                      Detected by their bold font (or, in CIDFont PDFs with no
+                      bold, by font size and column-name keywords) and carried
+                      forward to later pages — and later tables — that share the
+                      same columns but don't reprint the header.
+  * section heading — a title that starts a table (e.g. "BACHELOR OF ARTS").
+                      Recognised by its red colour (fallback: bold/larger type)
+                      and emitted as its own "heading" field, never mixed into a
+                      row.  Telling a title from a wrapped cell is what keeps a
+                      multi-line row whole instead of exploding it into sections.
   * data row        — every other row, emitted as a sub-object mapping each
-                      label to the cell beneath it.
+                      label to the cell beneath it.  Cells that wrap onto extra
+                      lines are stitched back into the row they belong to.
+
+Column boundaries come from the table's drawn cell borders when present (even
+cells drawn as filled rectangles rather than ruled lines), which is immune to
+the left-vs-right text-alignment guesswork that whitespace columns suffer from.
 
 Output shape:
 
@@ -92,6 +101,33 @@ def make_headings(header_cells):
 
 def is_bold(word):
     return "bold" in str(word.get("fontname", "")).lower()
+
+
+def _is_reddish(color):
+    """True if a pdfplumber colour value is a red (used for section titles).
+
+    Colours arrive as an RGB tuple, a single grey float, or a CMYK 4-tuple
+    (or ``None``).  Only RGB-style reds are treated as red; greys never are."""
+    if isinstance(color, (tuple, list)):
+        if len(color) == 3:
+            r, g, b = color
+            return r >= 0.5 and g <= 0.4 and b <= 0.4
+        if len(color) == 4:  # CMYK: red ≈ low cyan, high magenta & yellow
+            c, m, y, _k = color
+            return c <= 0.3 and m >= 0.5 and y >= 0.5
+    return False
+
+
+def is_red(word):
+    return _is_reddish(word.get("non_stroking_color"))
+
+
+def line_is_red(line):
+    """A line is a section title when most of its words are red."""
+    if not line:
+        return False
+    red = sum(1 for w in line if is_red(w))
+    return red / len(line) >= 0.6
 
 
 def line_text(line):
@@ -227,8 +263,19 @@ def detect_columns(lines):
     return _merge_nearby_bands(merged, max_gap=5.0)
 
 
-def _columns_from_edges(page, lines):
-    """Derive column bands from the table's *drawn* vertical borders.
+def _cluster_positions(values, tol=3.0):
+    """Average together values that fall within *tol* of the running cluster."""
+    clusters = []
+    for x in sorted(values):
+        if clusters and x - clusters[-1][-1] <= tol:
+            clusters[-1].append(x)
+        else:
+            clusters.append([x])
+    return clusters
+
+
+def _edge_boundaries(page):
+    """The x-positions of a page's drawn vertical rules (column boundaries).
 
     Many "borderless-looking" PDFs actually draw each cell as a filled
     rectangle, so pdfplumber reports no ``page.lines`` but plenty of vertical
@@ -236,44 +283,54 @@ def _columns_from_edges(page, lines):
     far more reliable than inferring columns from whitespace, and immune to the
     left-vs-right text-alignment ambiguity that whitespace bands suffer from.
 
-    Returns a list of (left, right) bands, or ``None`` when the page has no
-    usable vertical grid (≤ 2 boundaries).  A boundary that a large share of
-    rows draw a word *across* is dropped, because that means the cells either
-    side are merged in the text layer (e.g. a ``#`` counter printed flush
-    against the code, emitted as one token ``11105101``)."""
+    Returns the de-duplicated boundary x-positions (a rule must be drawn as at
+    least three short segments to count, filtering stray marks), or ``[]``."""
     vedges = [e for e in getattr(page, "edges", []) if e.get("orientation") == "v"]
     if not vedges:
+        return []
+    return sorted(sum(c) / len(c)
+                  for c in _cluster_positions(e["x0"] for e in vedges)
+                  if len(c) >= 3)
+
+
+def _document_edge_bands(pages):
+    """One consistent set of column bands from the whole document's drawn grid.
+
+    The grid is drawn identically on every page, so the boundaries are pooled
+    across pages (a boundary kept if it appears on a meaningful share of them)
+    rather than re-derived per page — which would otherwise yield slightly
+    different column counts page to page.
+
+    Every drawn boundary is kept.  Columns that the text layer fuses anyway —
+    e.g. a ``#`` counter printed flush against the code, emitted as one token
+    ``11105101`` — sort themselves out downstream: word-to-column assignment is
+    by greatest overlap, so the fused token lands in the wider of the two cells,
+    the narrow counter cell is left empty and dropped by ``_drop_empty_columns``,
+    and the leading counter digits are split off by ``_deglue_row_numbers``.
+
+    Returns a list of (left, right) bands, or ``None`` when there is no usable
+    grid."""
+    border_pages = [pd for pd in pages if pd["kind"] == "border"]
+    if not border_pages:
         return None
 
-    # Cluster edge x-positions that fall within 3 pt of each other.
-    xs = sorted(e["x0"] for e in vedges)
-    clusters = []
-    for x in xs:
-        if clusters and x - clusters[-1][-1] <= 3.0:
-            clusters[-1].append(x)
-        else:
-            clusters.append([x])
-    # Keep clusters with enough support to be a real rule, not a stray mark.
-    boundaries = sorted(sum(c) / len(c) for c in clusters if len(c) >= 3)
+    per_page = [pd.get("edge_x") or [] for pd in border_pages]
+    all_positions = [x for xs in per_page for x in xs]
+    if not all_positions:
+        return None
+
+    # Pool boundaries across pages; keep those drawn on a real fraction of them.
+    support_needed = max(2, int(len(border_pages) * 0.3))
+    boundaries = []
+    for cluster in _cluster_positions(all_positions):
+        if len(cluster) >= support_needed:
+            boundaries.append(sum(cluster) / len(cluster))
+    boundaries.sort()
     if len(boundaries) < 3:
         return None
 
-    # Drop interior boundaries that cut through merged-cell tokens: if many
-    # rows have a word straddling the boundary, the two columns are fused in
-    # the text and must stay one band.
-    n_lines = max(1, len(lines))
-    kept = [boundaries[0]]
-    for b in boundaries[1:-1]:
-        straddling = sum(
-            1 for ln in lines
-            if any(w["x0"] < b - 0.5 and w["x1"] > b + 0.5 for w in ln)
-        )
-        if straddling / n_lines > 0.30:
-            continue
-        kept.append(b)
-    kept.append(boundaries[-1])
-
-    return [(kept[i], kept[i + 1]) for i in range(len(kept) - 1)]
+    return [(boundaries[i], boundaries[i + 1])
+            for i in range(len(boundaries) - 1)]
 
 
 def _band_distance(band, x):
@@ -313,12 +370,39 @@ def _band_of_overlap(word, bands):
     return min(range(len(bands)), key=lambda i: _band_distance(bands[i], center))
 
 
+def _split_glued_value(word):
+    """Split a token that fuses a decimal value with the next cell's text.
+
+    Some tables print a cell value flush against the following cell, so the text
+    layer emits one token like ``40.571MAT`` (a cutoff value + the start of a
+    subject requirement) or ``35.796-`` (a cutoff value + the next column's
+    missing-value dash).  Split where the number ends and the next cell begins,
+    estimating each piece's x-span from its share of the characters so the two
+    halves land in their respective columns.  Returns a list of word dicts
+    (just the original when there is nothing to split)."""
+    import re
+    text = word["text"]
+    # A decimal value followed by a letter or a lone dash — the boundary into
+    # the next cell.  (A plain ``24.188`` or ``-`` has no such tail.)
+    m = re.match(r"^(-?\d+\.\d+)([A-Za-z\-].*)$", text)
+    if not m:
+        return [word]
+    head, tail = m.group(1), m.group(2)
+    x0, x1 = word["x0"], word["x1"]
+    cut = x0 + (x1 - x0) * (len(head) / len(text))
+    a = dict(word); a["text"], a["x1"] = head, cut
+    b = dict(word); b["text"], b["x0"] = tail, cut
+    # The tail may itself glue another value (rare) — split it too.
+    return [a] + _split_glued_value(b)
+
+
 def line_to_cells(line, bands):
     """Distribute a line's words into column bands by greatest horizontal
     overlap with each band."""
     cells = [[] for _ in bands]
     for w in line:
-        cells[_band_of_overlap(w, bands)].append(w["text"])
+        for piece in _split_glued_value(w):
+            cells[_band_of_overlap(piece, bands)].append(piece["text"])
     return [clean(" ".join(c)) for c in cells]
 
 
@@ -336,6 +420,22 @@ def cluster_count(line, gap=15.0):
             clusters += 1
         prev_x1 = max(prev_x1, w["x1"])
     return clusters
+
+
+def _has_data_values(line):
+    """True if a line carries row data — a long numeric code or a decimal value.
+
+    Column headers name things in words; only data rows contain a 5+ digit code
+    or a decimal number (a cutoff such as ``24.188``).  Tokens are split on
+    common glue so a value fused to text (``40.571MAT``) is still recognised."""
+    import re
+    for w in line:
+        for tok in re.split(r"[^0-9A-Za-z.]+", w["text"]):
+            if re.fullmatch(r"\d{5,}\w*", tok):   # programme/row code
+                return True
+            if re.search(r"\d\.\d", tok):         # decimal cutoff value
+                return True
+    return False
 
 
 def is_label_row(line, page_width=None, doc_has_bold=True, header_size=None):
@@ -357,6 +457,14 @@ def is_label_row(line, page_width=None, doc_has_bold=True, header_size=None):
     falls back to font-size heuristics: header words typically use a larger
     point size than body text."""
     if len(line) < 2:
+        return False
+
+    # A header names columns with words; it never carries a row's data. So a
+    # line holding a long numeric code or a decimal value (a cutoff like
+    # "24.188") is a data row, not a label row — this guards the weaker
+    # size/cluster heuristics below from firing on wide data rows whose body
+    # font is barely smaller than the header's.
+    if _has_data_values(line):
         return False
 
     bold = sum(1 for w in line if is_bold(w))
@@ -418,22 +526,29 @@ def is_label_row(line, page_width=None, doc_has_bold=True, header_size=None):
 
 
 def is_heading(line, bands, page_width=None, doc_has_bold=True, header_size=None):
-    """A section title: centred text that isn't a data row.
+    """A section title that starts a new table, not a data row.
 
-    Uses multiple signals:
-    1. No word sits in the leftmost column band (data rows always start there).
-    2. Short, centred lines that start well right of the left margin.
+    A data row always puts a value in the leftmost (code) column, so a heading
+    must leave it empty — but so does a *wrapped* cell whose text spills onto a
+    second line, so an empty code column alone is not enough.  The deciding
+    signal is colour: these documents print every table's title in **red**.
+    For documents that don't colour their titles we fall back to a short,
+    centred line set in the heading style (bold, or larger than the body text).
 
-    When the document has no bold fonts, uses font size as a proxy."""
+    Distinguishing a title from a wrapped-cell continuation here is what keeps a
+    multi-line row as one row instead of exploding into phantom sections."""
     if not bands or len(bands) < 2:
         return False
     # Single words are never section headings — they're layout artefacts.
     if len(line) < 2:
         return False
-    # Primary signal: nothing in the first column band.
-    if not any(_band_of(w, bands) == 0 for w in line):
+    # A value in the first (code) column means this is a data row, not a title.
+    if any(_band_of(w, bands) == 0 for w in line):
+        return False
+    # Primary signal: section titles are printed in red.
+    if line_is_red(line):
         return True
-    # Fallback for longer centred titles:
+    # Fallback for longer centred titles in uncoloured documents:
     if page_width:
         line_x0 = min(w["x0"] for w in line)
         line_x1 = max(w["x1"] for w in line)
@@ -476,17 +591,19 @@ def _bands_from_header(header_words):
     return [(min(w["x0"] for w in g), max(w["x1"] for w in g)) for g in groups]
 
 
-def labels_for_bands(header_words, bands):
+def labels_for_bands(header_words, bands, reliable=False):
     """Map bold header words onto the column bands.
 
     Uses each word's **left edge** (x0) rather than its centre, so overlapping
     header groups (e.g. ``PROG CODE`` interleaved with ``INSTITUTION NAME``)
     don't cross-assign to the wrong band.
 
-    After x0 assignment, applies a reading-order correction: if a band received
-    more words than expected, excess words spill forward to the next band(s).
-    This fixes cases where header words (bold, slightly different font metrics)
-    don't line up exactly with the data-value column bands."""
+    When *reliable* is False the bands were inferred (from whitespace) and may
+    not line up with where the header sits, so a reading-order correction spills
+    a band's excess words forward to the next band.  When the bands come from
+    drawn borders (*reliable* True) the x0 assignment is already exact and that
+    spill is skipped — it would wrongly break a multi-word header cell with an
+    internal gap (e.g. ``CUTOFF   - 2023``) across two columns."""
     if not bands or not header_words:
         return []
     bands = list(bands)
@@ -504,22 +621,25 @@ def labels_for_bands(header_words, bands):
     # horizontal gap between consecutive words and split the bucket there.
     # e.g.  bucket = [(484,"2018"), (497,"CUTOFF"), (523,"2019")]
     #       largest gap = 523-497 = 26 → split → "2019" moves to next bucket.
-    for i in range(len(buckets) - 1):
-        if len(buckets[i]) <= 2:
-            continue
-        buckets[i].sort(key=lambda t: t[0])
-        # find the largest gap between consecutive words in this bucket
-        best_gap, best_j = 0, 0
-        for j in range(len(buckets[i]) - 1):
-            gap = buckets[i][j + 1][0] - buckets[i][j][0]
-            if gap > best_gap:
-                best_gap = gap
-                best_j = j
-        if best_gap > 20:  # pt — only split between distinct columns
-            spill = buckets[i][best_j + 1:]
-            buckets[i] = buckets[i][:best_j + 1]
-            buckets[i + 1] = spill + buckets[i + 1]
-            buckets[i + 1].sort(key=lambda t: t[0])
+    # Only when the bands themselves are unreliable — accurate (border) bands
+    # already placed each word in the right column.
+    if not reliable:
+        for i in range(len(buckets) - 1):
+            if len(buckets[i]) <= 2:
+                continue
+            buckets[i].sort(key=lambda t: t[0])
+            # find the largest gap between consecutive words in this bucket
+            best_gap, best_j = 0, 0
+            for j in range(len(buckets[i]) - 1):
+                gap = buckets[i][j + 1][0] - buckets[i][j][0]
+                if gap > best_gap:
+                    best_gap = gap
+                    best_j = j
+            if best_gap > 20:  # pt — only split between distinct columns
+                spill = buckets[i][best_j + 1:]
+                buckets[i] = buckets[i][:best_j + 1]
+                buckets[i + 1] = spill + buckets[i + 1]
+                buckets[i + 1].sort(key=lambda t: t[0])
 
     cells = []
     for b in buckets:
@@ -605,7 +725,9 @@ def _read_pages(pdf, on_page=None):
                                                page_number, t["grid"]) for t in ruled],
             })
         else:
-            words = page.extract_words(use_text_flow=True, extra_attrs=["fontname", "size"])
+            words = page.extract_words(
+                use_text_flow=True,
+                extra_attrs=["fontname", "size", "non_stroking_color"])
             if not any_bold:
                 any_bold = any(is_bold(w) for w in words)
             for w in words:
@@ -616,7 +738,7 @@ def _read_pages(pdf, on_page=None):
             pages.append({"page": page_number, "kind": "border",
                           "width": page.width,
                           "lines": lines,
-                          "edge_bands": _columns_from_edges(page, lines)})
+                          "edge_x": _edge_boundaries(page)})
 
     # Compute header font size for non-bold documents.
     # Header rows typically use the largest consistent font size; body text
@@ -707,31 +829,10 @@ def _border_contexts(pages, chrome):
     return contexts
 
 
-def _context_edge_bands(ctx, page_edges):
-    """The drawn-border column bands shared by the pages in this context.
-
-    Each page reports its own grid; for a table continued across pages the grids
-    are identical, so we take the layout that the most pages agree on."""
-    if not page_edges:
-        return None
-    sigs = defaultdict(int)
-    by_sig = {}
-    for page, _ln in ctx["lines"]:
-        eb = page_edges.get(page)
-        if eb and len(eb) >= 2:
-            sig = tuple(round(x, 1) for b in eb for x in b)
-            sigs[sig] += 1
-            by_sig[sig] = eb
-    if not sigs:
-        return None
-    best = max(sigs, key=sigs.get)
-    return by_sig[best]
-
-
-def _sections_from_context(ctx, page_edges=None):
+def _sections_from_context(ctx, doc_bands=None):
     """Build sections for one header context: compute bands from its data lines
-    (preferring drawn borders), name them with the bold header, then split into
-    headings + rows."""
+    (preferring the document's drawn borders), name them with the bold header,
+    then split into headings + rows."""
     data_lines = [ln for _, ln in ctx["lines"]]
     if not data_lines:
         return []
@@ -750,8 +851,9 @@ def _sections_from_context(ctx, page_edges=None):
         sample = sample[::step]
 
     # Drawn cell borders are ground truth for column boundaries; fall back to
-    # whitespace-corridor detection only when the page has no usable grid.
-    bands = _context_edge_bands(ctx, page_edges)
+    # whitespace-corridor detection only when the document has no usable grid.
+    bands = doc_bands
+    using_edges = bool(doc_bands and len(doc_bands) >= 2)
     if not bands or len(bands) < 2:
         bands = detect_columns(sample)
 
@@ -764,29 +866,61 @@ def _sections_from_context(ctx, page_edges=None):
             if len(hdr_bands) > len(bands):
                 bands = hdr_bands
 
-    labels = labels_for_bands(ctx["header"], bands) if len(bands) >= 2 else \
+    # Prune bands that never receive a word.  A drawn grid can include a column
+    # the text never fills on its own — most often a "#" counter cell whose
+    # digits are glued onto the code and land in the code column instead.
+    # Removing it up front makes the leftmost band the real first data column
+    # (the code), which the row/continuation split below relies on.
+    if bands:
+        occupied = [False] * len(bands)
+        for _pg, ln in ctx["lines"]:
+            for w in ln:
+                occupied[_band_of_overlap(w, bands)] = True
+        if any(occupied) and not all(occupied):
+            bands = [b for b, o in zip(bands, occupied) if o]
+
+    labels = labels_for_bands(ctx["header"], bands, reliable=using_edges) \
+        if len(bands) >= 2 else \
         make_headings(["column_1"]) if bands else []
     page_width = ctx.get("width")
     doc_has_bold = ctx.get("doc_has_bold", True)
     header_size = ctx.get("header_size")
 
-    sections, section = [], None
+    def key_for(i):
+        return labels[i] if i < len(labels) else f"column_{i + 1}"
+
+    sections, section, prev_row = [], None, None
     for page, ln in ctx["lines"]:
         if is_heading(ln, bands, page_width=page_width,
                       doc_has_bold=doc_has_bold, header_size=header_size):
             section = {"heading": line_text(ln), "page": page,
                        "labels": labels, "rows": []}
             sections.append(section)
-        else:
-            if section is None:
-                section = {"heading": "", "page": page, "labels": labels, "rows": []}
-                sections.append(section)
-            cells = line_to_cells(ln, bands)
-            row = {}
+            prev_row = None
+            continue
+
+        if section is None:
+            section = {"heading": "", "page": page, "labels": labels, "rows": []}
+            sections.append(section)
+
+        cells = line_to_cells(ln, bands)
+        first_cell = cells[0].strip() if cells else ""
+
+        # No value in the code column and not a title → a wrapped cell that
+        # continues the previous row.  Append each piece to the matching column
+        # rather than emitting a phantom row.
+        if not first_cell and prev_row is not None:
             for i in range(len(bands)):
-                key = labels[i] if i < len(labels) else f"column_{i + 1}"
-                row[key] = cells[i] if i < len(cells) else ""
-            section["rows"].append(row)
+                piece = cells[i] if i < len(cells) else ""
+                if piece:
+                    k = key_for(i)
+                    prev_row[k] = (prev_row.get(k, "") + " " + piece).strip()
+            continue
+
+        row = {key_for(i): (cells[i] if i < len(cells) else "")
+               for i in range(len(bands))}
+        section["rows"].append(row)
+        prev_row = row
 
     _drop_empty_columns(sections, labels)
     return sections
@@ -824,15 +958,14 @@ def extract_sections(pdf_path, spell=True, quiet=False, on_page=None):
         pages = _read_pages(pdf, on_page=on_page)
 
     chrome = _running_chrome(pages)
-    page_edges = {pd["page"]: pd.get("edge_bands")
-                  for pd in pages if pd["kind"] == "border"}
+    doc_bands = _document_edge_bands(pages)
     sections = []
     for pd in pages:
         if pd["kind"] == "ruled":
             sections.extend(pd["sections"])
     # borderless sections, in document order, with cross-page header carry-over
     for ctx in _border_contexts(pages, chrome):
-        sections.extend(_sections_from_context(ctx, page_edges))
+        sections.extend(_sections_from_context(ctx, doc_bands))
 
     # drop empty sections (a heading with no rows is still kept; truly empty ones go)
     sections = [s for s in sections if s["rows"] or s["heading"]]
