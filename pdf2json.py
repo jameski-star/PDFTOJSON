@@ -266,7 +266,7 @@ def cluster_count(line, gap=15.0):
     return clusters
 
 
-def is_label_row(line, page_width=None):
+def is_label_row(line, page_width=None, doc_has_bold=True, header_size=None):
     """A column-label row: mostly bold and spread across several columns.
 
     Uses two complementary signals because overlapping header words (a PDF
@@ -279,13 +279,16 @@ def is_label_row(line, page_width=None):
 
     The line must span a significant portion of the page width — this excludes
     short centred section titles (e.g. "BACHELOR OF SCIENCE IN …") that happen
-    to be bold."""
+    to be bold.
+
+    When the document has **no bold fonts at all** (common with CIDFont PDFs),
+    falls back to font-size heuristics: header words typically use a larger
+    point size than body text."""
     if len(line) < 2:
         return False
+
     bold = sum(1 for w in line if is_bold(w))
     bold_ratio = bold / len(line)
-    if bold_ratio < 0.6:
-        return False
 
     line_x0 = min(w["x0"] for w in line)
     line_x1 = max(w["x1"] for w in line)
@@ -295,43 +298,87 @@ def is_label_row(line, page_width=None):
     if page_width and line_width / page_width < 0.45:
         return False
 
-    # Many bold words → almost certainly a header row.
-    if bold >= 8:
-        return True
-    # Otherwise require the line to be visibly spread across columns.
-    clusters = cluster_count(line)
-    if clusters >= 4:
-        return True
-    # Fewer clusters but spread across most of the page width → header.
-    if page_width and clusters >= 2:
-        if line_width / page_width >= 0.5:
+    # --- primary signal: actual bold fonts ---
+    if doc_has_bold:
+        if bold_ratio < 0.6:
+            return False
+        if bold >= 8:
             return True
+        clusters = cluster_count(line)
+        if clusters >= 4:
+            return True
+        if page_width and clusters >= 2 and line_width / page_width >= 0.5:
+            return True
+        return False
+
+    # --- fallback: no bold fonts in the document ---
+    # Use font size as a proxy, combined with content patterns.
+    if header_size is not None:
+        at_header_size = sum(
+            1 for w in line if w.get("size", 0) >= header_size - 0.5
+        )
+        size_ratio = at_header_size / len(line)
+    else:
+        sizes = [w.get("size", 0) for w in line if w.get("size", 0) > 0]
+        if not sizes:
+            return False
+        median_size = sorted(sizes)[len(sizes) // 2]
+        at_header_size = sum(1 for s in sizes if s >= median_size)
+        size_ratio = at_header_size / len(sizes)
+
+    if size_ratio < 0.8:
+        return False
+
+    # Check for header-like content patterns — the strongest signal.
+    text = " ".join(w["text"] for w in line).upper()
+    header_keywords = ["CODE", "INSTITUTION", "PROGRAMME", "CUTOFF", "NAME"]
+    keyword_hits = sum(1 for kw in header_keywords if kw in text)
+
+    if keyword_hits >= 3:
+        return True
+
+    # Without keyword hits, require BOTH high clusters AND wide spread.
+    clusters = cluster_count(line)
+    if clusters >= 5 and line_width / (page_width or 792) >= 0.6:
+        return True
+
     return False
 
 
-def is_heading(line, bands, page_width=None):
+def is_heading(line, bands, page_width=None, doc_has_bold=True, header_size=None):
     """A section title: centred text that isn't a data row.
 
     Uses multiple signals:
     1. No word sits in the leftmost column band (data rows always start there).
-    2. If the line spans < 40 % of the page width and is bold or starts well
-       right of the left margin, it's likely a section title."""
+    2. Short, centred lines that start well right of the left margin.
+
+    When the document has no bold fonts, uses font size as a proxy."""
     if not bands or len(bands) < 2:
+        return False
+    # Single words are never section headings — they're layout artefacts.
+    if len(line) < 2:
         return False
     # Primary signal: nothing in the first column band.
     if not any(_band_of(w, bands) == 0 for w in line):
         return True
-    # Fallback for long titles that extend into the first band:
-    # short, centred, bold lines are section headings.
+    # Fallback for longer centred titles:
     if page_width:
         line_x0 = min(w["x0"] for w in line)
         line_x1 = max(w["x1"] for w in line)
         line_width = line_x1 - line_x0
-        # Centred short text (≤ 40 % of page) that starts well right of margin.
-        if line_width / page_width <= 0.45 and line_x0 > page_width * 0.08:
-            bold = sum(1 for w in line if is_bold(w))
-            if bold / len(line) >= 0.5:
-                return True
+        # Must be short AND start well right of margin.
+        if line_width / page_width <= 0.40 and line_x0 > page_width * 0.20:
+            if doc_has_bold:
+                bold = sum(1 for w in line if is_bold(w))
+                if bold / len(line) >= 0.5:
+                    return True
+            elif header_size is not None:
+                at_size = sum(
+                    1 for w in line
+                    if w.get("size", 0) >= header_size - 0.2
+                )
+                if at_size / len(line) >= 0.8:
+                    return True
     return False
 
 
@@ -443,9 +490,14 @@ def section_from_grid(title, page_number, grid):
 # ---------------------------------------------------------------------------
 
 def _read_pages(pdf, on_page=None):
-    """First pass: per page, decide ruled vs borderless and cache the content."""
+    """First pass: per page, decide ruled vs borderless and cache the content.
+
+    Also profiles the document: does any word use a bold font?  If not, what
+    font size distinguishes header rows from body rows?"""
     pages = []
     total = len(pdf.pages)
+    any_bold = False
+    all_sizes = []
     for page_number, page in enumerate(pdf.pages, start=1):
         if on_page:
             on_page(page_number, total)
@@ -460,9 +512,30 @@ def _read_pages(pdf, on_page=None):
             })
         else:
             words = page.extract_words(use_text_flow=True, extra_attrs=["fontname", "size"])
+            if not any_bold:
+                any_bold = any(is_bold(w) for w in words)
+            for w in words:
+                sz = w.get("size", 0)
+                if sz > 0:
+                    all_sizes.append(sz)
             pages.append({"page": page_number, "kind": "border",
                           "width": page.width,
                           "lines": group_lines(words) if words else []})
+
+    # Compute header font size for non-bold documents.
+    # Header rows typically use the largest consistent font size; body text
+    # is slightly smaller.  We use the 95th percentile as the header-size
+    # threshold, which captures the larger of two distinct sizes.
+    header_size = None
+    if not any_bold and all_sizes:
+        all_sizes.sort()
+        header_size = all_sizes[int(len(all_sizes) * 0.90)]
+
+    # Attach document-level profile to each page dict.
+    for pd in pages:
+        pd["doc_has_bold"] = any_bold
+        pd["header_size"] = header_size
+
     return pages
 
 
@@ -492,33 +565,47 @@ def _border_contexts(pages, chrome):
     a header-less document is never lumped into one giant column detection."""
     contexts, current = [], None
 
-    def start(header_line, page, width):
+    def start(header_line, page, width, doc_bold=True, hdr_size=None):
         ctx = {"header": list(header_line) if header_line else [],
                "lines": [], "header_based": bool(header_line),
-               "page": page, "width": width}
+               "page": page, "width": width,
+               "doc_has_bold": doc_bold, "header_size": hdr_size}
         contexts.append(ctx)
         return ctx
 
     prev_was_label = False
+    found_first_label = False
     for pd in pages:
         if pd["kind"] != "border":
             prev_was_label = False
             continue
         pw = pd.get("width")
+        doc_bold = pd.get("doc_has_bold", True)
+        hdr_size = pd.get("header_size")
         for ln in pd["lines"]:
-            if chrome_key(line_text(ln)) in chrome:
+            is_chrome = chrome_key(line_text(ln)) in chrome
+            # Don't filter lines that look like column label rows on the
+            # first page — the same text often repeats as a running header
+            # on later pages, but on page 1 it's the essential label row.
+            if is_chrome and not found_first_label:
+                if is_label_row(ln, page_width=pw, doc_has_bold=doc_bold,
+                                header_size=hdr_size):
+                    is_chrome = False  # let this one through
+            if is_chrome:
                 continue
-            if is_label_row(ln, page_width=pw):
+            if is_label_row(ln, page_width=pw, doc_has_bold=doc_bold,
+                            header_size=hdr_size):
+                found_first_label = True
                 if prev_was_label and current is not None and current["header_based"]:
                     current["header"].extend(ln)          # merge multi-line header
                 else:
-                    current = start(ln, pd["page"], pw)
+                    current = start(ln, pd["page"], pw, doc_bold, hdr_size)
                 prev_was_label = True
             else:
                 # carry only under a real header; otherwise stay per-page
                 if current is None or (not current["header_based"]
                                        and current["page"] != pd["page"]):
-                    current = start(None, pd["page"], pw)
+                    current = start(None, pd["page"], pw, doc_bold, hdr_size)
                 current["lines"].append((pd["page"], ln))
                 prev_was_label = False
     return contexts
@@ -547,10 +634,13 @@ def _sections_from_context(ctx):
     labels = labels_for_bands(ctx["header"], bands) if len(bands) >= 2 else \
         make_headings(["column_1"]) if bands else []
     page_width = ctx.get("width")
+    doc_has_bold = ctx.get("doc_has_bold", True)
+    header_size = ctx.get("header_size")
 
     sections, section = [], None
     for page, ln in ctx["lines"]:
-        if is_heading(ln, bands, page_width=page_width):
+        if is_heading(ln, bands, page_width=page_width,
+                      doc_has_bold=doc_has_bold, header_size=header_size):
             section = {"heading": line_text(ln), "page": page,
                        "labels": labels, "rows": []}
             sections.append(section)
