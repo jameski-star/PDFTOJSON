@@ -24,9 +24,17 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 # Import the converter that lives one directory up (pdf2json.py).
+# Works both when run directly and when gunicorn changes to webapp/ directory.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-import pdf2json  # noqa: E402  (path set above)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    import pdf2json  # noqa: E402  (path set above)
+except ImportError as e:
+    print(f"ERROR: Could not import pdf2json from {PROJECT_ROOT}: {e}", file=sys.stderr)
+    print(f"sys.path: {sys.path}", file=sys.stderr)
+    raise
 
 MAX_MB = 50  # reject uploads larger than this
 
