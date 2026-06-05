@@ -1,0 +1,18 @@
+# Render.com blueprint — one-click free deploy.
+# In the Render dashboard: New > Blueprint, point it at this repo.
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: pdf2json
+    runtime: python
+    plan: free
+    buildCommand: pip install -r webapp/requirements.txt
+    startCommand: gunicorn --chdir webapp app:app -b 0.0.0.0:$PORT --timeout 120 --workers 2
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.4"
+      # Set this to your real Render URL after the first deploy so the
+      # canonical / Open Graph / sitemap links are correct.
+      - key: SITE_URL
+        value: https://pdf2json.onrender.com

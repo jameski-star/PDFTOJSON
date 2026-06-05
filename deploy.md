@@ -9,100 +9,109 @@ services ever see the PDF contents.
 
 ---
 
-## Quick Deploy (Free / Low Cost)
+## Quick Deploy (Free)
 
-### Option 1 — Render (easiest)
+The repo already ships everything these hosts need — you don't have to write
+any config by hand:
 
-[Render](https://render.com) offers a free tier for web services.
+| File             | Used by                                  |
+|------------------|------------------------------------------|
+| `render.yaml`    | Render (Blueprint)                       |
+| `Procfile`       | Railway, Heroku-likes                    |
+| `Dockerfile`     | Fly.io, Koyeb, Hugging Face Spaces, any container host |
+| `runtime.txt`    | Pins Python 3.12 on buildpack hosts      |
 
-1. Push your repo to GitHub
-2. Log into [dashboard.render.com](https://dashboard.render.com)
-3. Click **New +** → **Web Service**
-4. Connect your GitHub repo
-5. Configure:
+All of them run the same command:
 
-   | Field          | Value                             |
-   |----------------|-----------------------------------|
-   | Runtime        | Python 3                          |
-   | Build Command  | `pip install -r requirements.txt && pip install -r webapp/requirements.txt` |
-   | Start Command  | `cd webapp && gunicorn -b 0.0.0.0:$PORT app:app` |
-   | Instance Type  | Free                             |
+```bash
+gunicorn --chdir webapp app:app -b 0.0.0.0:$PORT --timeout 120 --workers 2
+```
 
-6. Click **Create Web Service**
-
-The app will be live at `https://your-app.onrender.com`.
-
-> **Cold-start note:** Free Render instances spin down after 15 min of
-> inactivity. The first request after a pause takes ~30–60 s to wake up.
-> Upgrade to a paid instance ($7/mo) to keep it always-on.
+> **Set `SITE_URL` after your first deploy** (e.g.
+> `SITE_URL=https://pdf2json.onrender.com`). It makes the page's canonical
+> link, Open Graph / Twitter cards, and `sitemap.xml` use your real domain
+> instead of `127.0.0.1`. The site works without it, but SEO/social previews
+> won't be correct until it's set.
 
 ---
 
-### Option 2 — Railway
+### Option 1 — Render (easiest, no card)
 
-[Railway](https://railway.app) has a generous free tier with no cold-start.
+[Render](https://render.com) has a free web-service tier. The repo's
+`render.yaml` is a one-click **Blueprint**.
 
-1. Push your repo to GitHub
-2. Log into [railway.app](https://railway.app)
-3. Click **New Project** → **Deploy from GitHub repo**
-4. Railway auto-detects the Python app and installs from
-   `requirements.txt`. Add a start command override:
+1. Push the repo to GitHub.
+2. In [dashboard.render.com](https://dashboard.render.com): **New +** →
+   **Blueprint** → pick the repo. Render reads `render.yaml` and fills in the
+   build/start commands for you.
+3. Click **Apply**. It goes live at `https://<name>.onrender.com`.
+4. In the service's **Environment**, set `SITE_URL` to that URL and redeploy.
 
-   ```
-   cd webapp && gunicorn -b 0.0.0.0:$PORT app:app
-   ```
+Prefer doing it manually? **New +** → **Web Service**, then:
 
-5. Deploy.
+| Field         | Value                                                              |
+|---------------|-------------------------------------------------------------------|
+| Build Command | `pip install -r webapp/requirements.txt`                          |
+| Start Command | `gunicorn --chdir webapp app:app -b 0.0.0.0:$PORT --timeout 120`   |
+| Instance Type | Free                                                              |
+
+> **Cold-start note:** free Render instances sleep after 15 min idle; the
+> first request after a pause takes ~30–60 s to wake. $7/mo keeps it always-on.
 
 ---
 
-### Option 3 — Fly.io
+### Option 2 — Hugging Face Spaces (genuinely free, no card)
 
-[Fly.io](https://fly.io) offers 3 free shared VMs. Great for low-latency
-global deployment.
+[Spaces](https://huggingface.co/spaces) runs the shipped `Dockerfile` for free
+with no credit card and no cold-start sleep.
 
-1. Install the `flyctl` CLI:
+1. **New Space** → SDK: **Docker** → **Blank**.
+2. Push this repo into the Space (it's a git remote), or upload the files.
+3. Spaces builds the `Dockerfile` and serves on port `8080` automatically.
+4. In **Settings → Variables**, add `SITE_URL=https://<user>-<space>.hf.space`.
 
-   ```bash
-   curl -L https://fly.io/install.sh | sh
-   ```
+---
 
-2. Create a `fly.toml` in your project root:
+### Option 3 — Railway
 
-   ```toml
-   app = "pdf2json"
-   primary_region = "iad"
+[Railway](https://railway.app) gives trial credits (no permanent free tier as
+of 2026, but enough to run this cheaply). It auto-detects the `Procfile`.
 
-   [build]
-     dockerfile = "Dockerfile"
+1. Push to GitHub → [railway.app](https://railway.app) → **New Project** →
+   **Deploy from GitHub repo**.
+2. It reads the `Procfile` and installs from `webapp/requirements.txt`
+   automatically — no start command to type.
+3. Add `SITE_URL` under the service's **Variables**.
 
-   [http_service]
-     internal_port = 8080
-     force_https = true
-     auto_stop_machines = true
-     auto_start_machines = true
-     min_machines_running = 0
-   ```
+---
 
-3. Create a `Dockerfile`:
+### Option 4 — Fly.io
 
-   ```dockerfile
-   FROM python:3.12-slim
-   WORKDIR /app
-   COPY requirements.txt webapp/requirements.txt ./
-   RUN pip install --no-cache-dir -r requirements.txt -r webapp/requirements.txt
-   COPY pdf2json.py corrections.py ./
-   COPY webapp/ ./webapp/
-   WORKDIR /app/webapp
-   CMD ["gunicorn", "-b", "0.0.0.0:8080", "app:app"]
-   ```
+[Fly.io](https://fly.io) offers a small free allowance and uses the shipped
+`Dockerfile`.
 
-4. Deploy:
+```bash
+curl -L https://fly.io/install.sh | sh   # install flyctl
+fly launch        # detects the Dockerfile; say yes to deploy
+fly secrets set SITE_URL=https://<your-app>.fly.dev
+fly deploy
+```
 
-   ```bash
-   fly launch   # first time
-   fly deploy   # subsequent updates
-   ```
+`fly launch` writes a `fly.toml` for you; set `internal_port = 8080` if it
+asks. `auto_stop_machines` scales to zero when idle to stay inside the free
+allowance.
+
+---
+
+### Option 5 — Koyeb
+
+[Koyeb](https://koyeb.com) has a free web-service instance and builds the
+shipped `Dockerfile`.
+
+1. [app.koyeb.com](https://app.koyeb.com) → **Create Web Service** →
+   **GitHub** → pick the repo.
+2. Builder: **Dockerfile**. Port: **8080**.
+3. Add `SITE_URL` under environment variables → **Deploy**.
 
 ---
 
@@ -126,25 +135,25 @@ sudo usermod -aG docker $USER
 # log out and back in
 ```
 
-**3. Create a `Dockerfile` (same as Fly.io above):**
+**3. Build and run the shipped `Dockerfile`:**
 
-```dockerfile
-FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt webapp/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r webapp/requirements.txt
-COPY pdf2json.py corrections.py ./
-COPY webapp/ ./webapp/
-WORKDIR /app/webapp
-EXPOSE 8080
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "-w", "4", "--timeout", "120", "app:app"]
-```
-
-**4. Build and run:**
+The repo already includes a production `Dockerfile`. Clone and run it:
 
 ```bash
+git clone https://github.com/jameski-star/pdf2json.git && cd pdf2json
 docker build -t pdf2json .
-docker run -d --name pdf2json --restart unless-stopped -p 8080:8080 pdf2json
+docker run -d --name pdf2json --restart unless-stopped \
+  -p 8080:8080 \
+  -e SITE_URL=https://pdf2json.yourdomain.com \
+  pdf2json
+```
+
+For a busier box, bump workers at run time:
+
+```bash
+docker run -d --name pdf2json --restart unless-stopped -p 8080:8080 \
+  -e SITE_URL=https://pdf2json.yourdomain.com pdf2json \
+  gunicorn --chdir webapp app:app -b 0.0.0.0:8080 -w 4 --timeout 120
 ```
 
 **5. Optional — reverse proxy with Caddy (automatic HTTPS):**
@@ -211,11 +220,14 @@ docker compose up -d
 
 ## Environment Variables
 
-| Variable | Default | Description                     |
-|----------|---------|---------------------------------|
-| `PORT`   | `5000`  | Port the Flask app listens on   |
+| Variable   | Default                 | Description                                                        |
+|------------|-------------------------|--------------------------------------------------------------------|
+| `PORT`     | `5000`                  | Port the Flask app listens on (most hosts inject this)             |
+| `SITE_URL` | `http://127.0.0.1:5000` | Public base URL for canonical, Open Graph, and `sitemap.xml` links |
 
-Set in the shell, `.env` file, or your deployment platform.
+Set in the shell, `.env` file, or your deployment platform. Always set
+`SITE_URL` to your real `https://…` domain in production so search engines and
+social-media previews use the correct URLs.
 
 ---
 

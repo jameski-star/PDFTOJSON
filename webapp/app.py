@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-pdf2json web UI — a tiny local Flask app that wraps the pdf2json converter.
+pdf2json web UI — a Flask app wrapping the pdf2json converter, plus a full
+marketing site (hero, features, how-it-works, use-cases, FAQ) around it.
 
-Drop a PDF in the browser, it runs the same extract_tables() used by the CLI,
+Drop a PDF in the browser, it runs the same extract_sections() used by the CLI,
 and hands back the structured JSON for preview and download.
 
 Run:
     python app.py            # http://127.0.0.1:5000
     PORT=8080 python app.py  # custom port
 
-This is intended for LOCAL use only — it binds to 127.0.0.1 and is not
-hardened for the public internet.
+For a public deployment set SITE_URL so canonical/OG/sitemap links are correct:
+    SITE_URL=https://pdf2json.example.com python app.py
 """
 
 import io
@@ -20,7 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, render_template, request, send_file
 
 # Import the converter that lives one directory up (pdf2json.py).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -29,13 +30,47 @@ import pdf2json  # noqa: E402  (path set above)
 
 MAX_MB = 50  # reject uploads larger than this
 
-app = Flask(__name__)
+# Absolute base URL for canonical links, Open Graph tags, and the sitemap.
+# Override per-deployment, e.g. SITE_URL=https://pdf2json.example.com.
+SITE_URL = os.environ.get("SITE_URL", "http://127.0.0.1:5000").rstrip("/")
+
+app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
 
 @app.route("/")
 def index():
-    return render_template("index.html", max_mb=MAX_MB)
+    return render_template("index.html", max_mb=MAX_MB, site_url=SITE_URL)
+
+
+@app.route("/robots.txt")
+def robots():
+    body = (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /convert\n"
+        "Disallow: /download\n"
+        f"Sitemap: {SITE_URL}/sitemap.xml\n"
+    )
+    return Response(body, mimetype="text/plain")
+
+
+@app.route("/sitemap.xml")
+def sitemap():
+    pages = ["/", "/#features", "/#how", "/#use-cases", "/#app", "/#faq"]
+    urls = "".join(
+        f"  <url><loc>{SITE_URL}{p}</loc>"
+        f"<changefreq>weekly</changefreq>"
+        f"<priority>{'1.0' if p == '/' else '0.7'}</priority></url>\n"
+        for p in pages
+    )
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"{urls}"
+        "</urlset>\n"
+    )
+    return Response(body, mimetype="application/xml")
 
 
 @app.route("/convert", methods=["POST"])
