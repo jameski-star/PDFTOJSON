@@ -100,20 +100,36 @@ Options:
 
 ---
 
-## Web UI (local)
+## Web app
 
-Prefer dragging a file into a browser? There's a tiny Flask app that wraps the
-exact same converter.
+Prefer dragging a file into a browser? The Flask app wraps the exact same
+converter inside a full website — hero, features, how-it-works, use-cases, a
+live converter, and an FAQ — with complete SEO (meta tags, Open Graph, Twitter
+cards, JSON-LD structured data, `robots.txt`, and `sitemap.xml`).
 
 ```bash
-./run-webapp.sh                 # installs Flask in .venv on first run
+./run-webapp.sh                  # installs Flask in .venv on first run
 # -> open http://127.0.0.1:5000
 PORT=8080 ./run-webapp.sh        # custom port
 ```
 
-Then drop a PDF, hit **Convert**, and preview/download the JSON. It binds to
-`127.0.0.1` only — it's meant for **local use**, not public hosting. Lives in
-`webapp/` (`app.py` + `templates/index.html`).
+Drop a PDF, hit **Convert**, and preview/download the JSON.
+
+For a **public deployment**, set `SITE_URL` so the canonical / Open Graph /
+sitemap links are absolute and correct:
+
+```bash
+SITE_URL=https://pdf2json.example.com PORT=8080 python webapp/app.py
+```
+
+Lives in `webapp/`:
+
+```
+webapp/
+├── app.py                  # routes: /  /convert  /download  /robots.txt  /sitemap.xml
+├── templates/index.html    # the full marketing site + converter
+└── static/                 # favicon.svg, og-image.svg
+```
 
 ---
 
@@ -191,13 +207,15 @@ pdf2json/
 ├── requirements.txt
 ├── pyproject.toml       # pip-installable, exposes the `pdf2json` command
 ├── install.sh           # one-shot venv + launcher setup
-├── run-webapp.sh        # start the local web UI
-├── webapp/              # local Flask web UI
-│   ├── app.py
+├── run-webapp.sh        # start the web app
+├── webapp/              # Flask web app (full site + converter)
+│   ├── app.py           # routes incl. robots.txt + sitemap.xml
 │   ├── requirements.txt
-│   └── templates/index.html
+│   ├── templates/index.html
+│   └── static/          # favicon.svg, og-image.svg
 ├── README.md
 └── examples/
     ├── KUCCPSDEGREES.pdf
     └── KUCCPSDEGREES.expected.json
 ```
+# PDFTOJSON
