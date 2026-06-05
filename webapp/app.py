@@ -30,7 +30,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 print(f"==> PROJECT_ROOT: {PROJECT_ROOT}", flush=True)
-print(f"==> sys.path: {sys.path[:3]}", flush=True)
 
 try:
     import pdf2json  # noqa: E402  (path set above)
@@ -95,35 +94,46 @@ def sitemap():
 
 @app.route("/convert", methods=["POST"])
 def convert():
+    print(f"\n=== /convert request received ===", flush=True)
     try:
         upload = request.files.get("file")
+        print(f"File object: {upload}", flush=True)
+        
         if upload is None or upload.filename == "":
+            print(f"ERROR: No file uploaded", flush=True)
             return jsonify(error="No file was uploaded."), 400
 
         name = upload.filename
+        print(f"Filename: {name}", flush=True)
+        
         if not name.lower().endswith(".pdf"):
+            print(f"ERROR: Not a PDF file", flush=True)
             return jsonify(error="That doesn't look like a PDF. Please upload a .pdf file."), 400
 
         spell = request.form.get("spell", "1") != "0"
+        print(f"Spell correction enabled: {spell}", flush=True)
 
         # Save to a temp file so pdfplumber can open it by path.
         tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
         try:
+            print(f"Saving to temp file: {tmp.name}", flush=True)
             upload.save(tmp.name)
             tmp.close()
-            print(f"Processing: {name}", flush=True)
+            
+            print(f"Processing PDF: {name}", flush=True)
             sections = pdf2json.extract_sections(tmp.name, spell=spell, quiet=True)
-            print(f"✓ Processed: {len(sections)} sections, {sum(len(s['rows']) for s in sections)} rows", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"✗ PDF processing error: {exc}", file=sys.stderr, flush=True)
+            print(f"✓ SUCCESS: {len(sections)} sections, {sum(len(s['rows']) for s in sections)} rows", flush=True)
+        except Exception as exc:
+            print(f"✗ ERROR during processing: {exc}", file=sys.stderr, flush=True)
             import traceback
             traceback.print_exc(file=sys.stderr)
             return jsonify(error=f"Could not read this PDF: {exc}"), 422
         finally:
             try:
                 os.unlink(tmp.name)
-            except OSError:
-                pass
+                print(f"Cleaned up temp file", flush=True)
+            except OSError as e:
+                print(f"Could not delete temp file: {e}", file=sys.stderr, flush=True)
 
         row_count = sum(len(s["rows"]) for s in sections)
         page_count = max((s.get("page", 0) for s in sections), default=0)
@@ -133,18 +143,22 @@ def convert():
             "total_rows": row_count,
             "sections": sections,
         }
-        return jsonify(
+        
+        response = jsonify(
             filename=Path(name).with_suffix(".json").name,
             section_count=len(sections),
             row_count=row_count,
             page_count=page_count,
             result=result,
         )
+        print(f"Returning JSON response", flush=True)
+        return response
+        
     except Exception as e:
         print(f"✗ CRITICAL /convert error: {e}", file=sys.stderr, flush=True)
         import traceback
         traceback.print_exc(file=sys.stderr)
-        return jsonify(error=f"Internal server error: {e}"), 500
+        return jsonify(error=f"Internal server error: {str(e)}"), 500
 
 
 @app.route("/download", methods=["POST"])
