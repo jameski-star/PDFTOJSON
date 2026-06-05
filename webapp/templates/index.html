@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>pdf2json — extract tables from a PDF</title>
+  <meta name="description" content="pdf2json — extract every table from a PDF into clean structured JSON. Local, private, no uploads." />
+  <title>pdf2json — PDF table extractor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
@@ -13,12 +14,16 @@
       --panel:     #1E293B;
       --panel-2:   #334155;
       --border:    #334155;
+      --border-2:  #475569;
       --text:      #F8FAFC;
       --muted:     #94A3B8;
       --accent:    #22C55E;
       --accent-dk: #16A34A;
       --danger:    #F87171;
+      --danger-bg: #3a1d20;
+      --radius-sm: 8px;
       --radius:    14px;
+      --radius-lg: 20px;
       --maxw:      720px;
     }
 
@@ -31,6 +36,7 @@
       font-family: "Space Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 16px;
       line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
     }
 
     body {
@@ -38,29 +44,40 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: clamp(20px, 5vw, 64px) 20px;
+      padding: clamp(20px, 5vw, 64px) 20px 48px;
     }
 
     main { width: 100%; max-width: var(--maxw); }
 
     /* ---- header ---- */
-    header { text-align: center; margin-bottom: 40px; }
+    header { text-align: center; margin-bottom: 48px; }
 
     .logo {
       display: inline-flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       font-size: clamp(28px, 6vw, 40px);
       font-weight: 700;
       letter-spacing: -0.5px;
+      line-height: 1.15;
     }
     .logo .brace { color: var(--accent); }
 
     .tagline {
       color: var(--muted);
-      margin: 14px auto 0;
-      max-width: 46ch;
+      margin: 16px auto 0;
+      max-width: 48ch;
       font-size: 15px;
+      line-height: 1.7;
+    }
+
+    /* ---- cards / panels ---- */
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: clamp(24px, 5vw, 36px);
+      margin-bottom: 24px;
     }
 
     /* ---- dropzone ---- */
@@ -68,10 +85,12 @@
       border: 2px dashed var(--panel-2);
       border-radius: var(--radius);
       background: var(--panel);
-      padding: clamp(32px, 8vw, 56px) 24px;
+      padding: clamp(40px, 8vw, 60px) 24px;
       text-align: center;
       cursor: pointer;
       transition: border-color .2s ease, background .2s ease;
+      position: relative;
+      outline: none;
     }
     .dropzone:hover,
     .dropzone:focus-visible { border-color: var(--accent); background: #1c2c44; }
@@ -79,55 +98,113 @@
       border-color: var(--accent);
       background: #16352a;
     }
-    .dropzone:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(34,197,94,.35); }
+    .dropzone:focus-visible { box-shadow: 0 0 0 3px rgba(34,197,94,.35); }
+    .dropzone.has-file {
+      border-style: solid;
+      border-color: var(--accent);
+      background: #16352a;
+    }
 
-    .dropzone svg { width: 44px; height: 44px; color: var(--accent); margin-bottom: 14px; }
-    .dropzone .big { font-size: 18px; font-weight: 700; }
-    .dropzone .small { color: var(--muted); font-size: 13px; margin-top: 8px; }
-    .dropzone .browse { color: var(--accent); text-decoration: underline; }
+    .dropzone-icon {
+      width: 48px;
+      height: 48px;
+      color: var(--accent);
+      margin: 0 auto 16px;
+      display: block;
+    }
+    .dropzone .big { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .dropzone .small { color: var(--muted); font-size: 13px; }
+    .dropzone .browse { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 
-    .file-chip {
+    /* file info bar */
+    .file-bar {
       display: none;
       align-items: center;
       gap: 10px;
-      justify-content: center;
-      margin-top: 18px;
-      color: var(--text);
+      margin-top: 20px;
+      padding: 12px 16px;
+      background: var(--panel);
+      border: 1px solid var(--border-2);
+      border-radius: var(--radius-sm);
       font-size: 14px;
+      color: var(--text);
     }
-    .file-chip.show { display: flex; }
-    .file-chip svg { width: 18px; height: 18px; color: var(--accent); }
+    .file-bar.show { display: flex; }
+    .file-bar .file-icon { width: 20px; height: 20px; color: var(--accent); flex-shrink: 0; }
+    .file-bar .file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-bar .file-size { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+    .file-bar .file-remove {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      padding: 4px; border-radius: 4px; flex-shrink: 0;
+      transition: color .15s ease, background .15s ease;
+    }
+    .file-bar .file-remove:hover { color: var(--danger); background: var(--danger-bg); }
+    .file-bar .file-remove:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--danger); }
+    .file-bar .file-remove svg { width: 16px; height: 16px; display: block; }
 
-    /* ---- convert button ---- */
+    /* ---- settings ---- */
+    .settings {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 20px;
+      font-size: 13px;
+      color: var(--muted);
+      user-select: none;
+    }
+    .toggle {
+      position: relative;
+      width: 40px; height: 22px;
+      background: var(--panel-2);
+      border-radius: 11px;
+      cursor: pointer;
+      transition: background .2s ease;
+      flex-shrink: 0;
+    }
+    .toggle.on { background: var(--accent); }
+    .toggle::after {
+      content: "";
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      background: var(--text);
+      transition: transform .2s ease;
+    }
+    .toggle.on::after { transform: translateX(18px); }
+    .toggle:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(34,197,94,.35); }
+
+    /* ---- actions ---- */
     .actions { margin-top: 28px; text-align: center; }
 
-    button {
+    .btn-primary {
       font-family: inherit;
       font-size: 16px;
       font-weight: 700;
-      cursor: pointer;
-    }
-
-    .btn-primary {
       background: var(--accent);
       color: #062012;
       border: none;
-      border-radius: 10px;
+      border-radius: var(--radius-sm);
       padding: 16px 40px;
-      min-height: 44px;
+      min-height: 48px;
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 10px;
-      transition: background .2s ease, transform .05s ease;
+      cursor: pointer;
+      transition: background .2s ease, transform .05s ease, box-shadow .2s ease;
+      width: 100%;
     }
     .btn-primary:hover { background: var(--accent-dk); }
     .btn-primary:active { transform: translateY(1px); }
     .btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(34,197,94,.4); }
-    .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-primary:disabled {
+      opacity: .45; cursor: not-allowed; transform: none;
+    }
 
     .spinner {
-      width: 16px; height: 16px;
-      border: 2px solid rgba(6,32,18,.4);
+      width: 18px; height: 18px;
+      border: 2px solid rgba(6,32,18,.35);
       border-top-color: #062012;
       border-radius: 50%;
       animation: spin .7s linear infinite;
@@ -135,140 +212,215 @@
     }
     .btn-primary.loading .spinner { display: inline-block; }
     .btn-primary.loading .label-run { display: none; }
+
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* ---- messages ---- */
     .msg {
       display: none;
-      margin-top: 22px;
-      padding: 14px 16px;
-      border-radius: 10px;
+      margin-top: 20px;
+      padding: 14px 18px;
+      border-radius: var(--radius-sm);
       font-size: 14px;
+      line-height: 1.6;
     }
-    .msg.error { display: block; background: #3a1d20; color: var(--danger); border: 1px solid #5a2a2e; }
+    .msg.error {
+      display: block;
+      background: var(--danger-bg);
+      color: var(--danger);
+      border: 1px solid #5a2a2e;
+    }
+    .msg[role="alert"] { display: block; }
 
     /* ---- result ---- */
-    .result { display: none; margin-top: 32px; }
+    .result { display: none; margin-top: 36px; }
     .result.show { display: block; }
 
     .stats {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
       gap: 14px;
-      flex-wrap: wrap;
-      margin-bottom: 18px;
+      margin-bottom: 24px;
     }
     .stat {
-      flex: 1 1 120px;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 16px;
+      border-radius: var(--radius-sm);
+      padding: 20px 16px;
       text-align: center;
+      transition: border-color .2s ease;
     }
-    .stat .num { font-size: 28px; font-weight: 700; color: var(--accent); }
-    .stat .lbl { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+    .stat:hover { border-color: var(--border-2); }
+    .stat .num { font-size: 28px; font-weight: 700; color: var(--accent); line-height: 1.15; }
+    .stat .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .75px; margin-top: 4px; }
 
     .result-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 10px;
+      gap: 14px;
+      margin-bottom: 12px;
       flex-wrap: wrap;
     }
-    .result-head h2 { font-size: 15px; margin: 0; color: var(--muted); font-weight: 400; }
+    .result-head h2 {
+      font-size: 14px; margin: 0; color: var(--muted);
+      font-weight: 400; flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
 
     .btn-download {
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 700;
       background: transparent;
       color: var(--accent);
       border: 1px solid var(--accent);
-      border-radius: 8px;
-      padding: 9px 16px;
+      border-radius: var(--radius-sm);
+      padding: 10px 18px;
       min-height: 44px;
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      transition: background .2s ease, color .2s ease;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background .2s ease, color .2s ease, box-shadow .2s ease;
     }
     .btn-download:hover { background: var(--accent); color: #062012; }
     .btn-download:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(34,197,94,.4); }
     .btn-download svg { width: 16px; height: 16px; }
 
+    /* preview */
+    .preview-wrap {
+      position: relative;
+    }
     pre {
       background: #0b1322;
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 18px;
+      border-radius: var(--radius-sm);
+      padding: 20px;
       overflow: auto;
-      max-height: 420px;
+      max-height: 440px;
       font-size: 13px;
-      line-height: 1.5;
+      line-height: 1.55;
       color: #cbd5e1;
       margin: 0;
+      scroll-behavior: smooth;
     }
-    pre .truncated { color: var(--muted); }
+    pre .key { color: #93c5fd; }
+    pre .str { color: #86efac; }
+    pre .num { color: #fde68a; }
+    pre .truncated {
+      display: block;
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-style: italic;
+      text-align: center;
+    }
 
+    /* footer */
     footer {
-      margin-top: 48px;
+      margin-top: 56px;
       color: var(--muted);
       font-size: 12px;
       text-align: center;
+      line-height: 1.8;
     }
-    footer code { color: var(--text); }
+    footer a { color: var(--accent); text-underline-offset: 2px; }
+    footer a:hover { color: var(--accent-dk); }
+    footer code { color: var(--text); background: var(--panel-2); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
 
+    /* ---- reduced motion ---- */
     @media (prefers-reduced-motion: reduce) {
       * { transition: none !important; animation: none !important; }
+    }
+
+    /* ---- mobile tweaks ---- */
+    @media (max-width: 480px) {
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .btn-primary { padding: 14px 24px; font-size: 15px; }
+      pre { max-height: 300px; font-size: 12px; }
     }
   </style>
 </head>
 <body>
   <main>
+    <!-- header -->
     <header>
-      <div class="logo"><span class="brace">{</span> pdf2json <span class="brace">}</span></div>
-      <p class="tagline">Drop a PDF and extract every table into clean, structured JSON — titles, headings, and rows.</p>
+      <h1 class="logo"><span class="brace" aria-hidden="true">{</span> pdf2json <span class="brace" aria-hidden="true">}</span></h1>
+      <p class="tagline">Drop a PDF and extract every table into clean, structured JSON &mdash; titles, headings, and rows &mdash; right in your browser. Nothing leaves your machine.</p>
     </header>
 
     <!-- dropzone -->
     <div class="dropzone" id="dropzone" role="button" tabindex="0"
          aria-label="Choose a PDF file or drop one here">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
         <polyline points="17 8 12 3 7 8" />
         <line x1="12" y1="3" x2="12" y2="15" />
       </svg>
       <div class="big">Drop a PDF here</div>
-      <div class="small">or <span class="browse">browse</span> &middot; max {{ max_mb }} MB</div>
+      <div class="small">or <span class="browse">browse</span> &middot; max {{ max_mb }}&thinsp;MB</div>
     </div>
-    <input type="file" id="fileInput" accept="application/pdf,.pdf" hidden />
+    <input type="file" id="fileInput" accept="application/pdf,.pdf" hidden aria-hidden="true" />
 
-    <div class="file-chip" id="fileChip">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <!-- file info bar -->
+    <div class="file-bar" id="fileBar">
+      <svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
         <polyline points="14 2 14 8 20 8" />
       </svg>
-      <span id="fileName"></span>
-    </div>
-
-    <div class="actions">
-      <button class="btn-primary" id="convertBtn" disabled>
-        <span class="spinner" aria-hidden="true"></span>
-        <span class="label-run">Convert</span>
+      <span class="file-name" id="fileName"></span>
+      <span class="file-size" id="fileSize"></span>
+      <button class="file-remove" id="fileRemove" aria-label="Remove selected file" title="Remove file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
       </button>
     </div>
 
-    <div class="msg error" id="errorBox" role="alert"></div>
+    <!-- settings -->
+    <div class="settings">
+      <div class="toggle on" id="spellToggle" role="switch" aria-checked="true"
+           aria-label="Enable spell correction" tabindex="0"></div>
+      <span>Spell correction</span>
+    </div>
+
+    <!-- convert -->
+    <div class="actions">
+      <button class="btn-primary" id="convertBtn" disabled>
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="label-run">Convert to JSON</span>
+      </button>
+    </div>
+
+    <!-- error -->
+    <div class="msg" id="errorBox" role="alert" aria-live="assertive"></div>
 
     <!-- result -->
-    <section class="result" id="result" aria-live="polite">
+    <section class="result" id="result" aria-live="polite" aria-label="Conversion result">
       <div class="stats">
-        <div class="stat"><div class="num" id="tableCount">0</div><div class="lbl">sections</div></div>
-        <div class="stat"><div class="num" id="rowCount">0</div><div class="lbl">rows</div></div>
+        <div class="stat">
+          <div class="num" id="tableCount">0</div>
+          <div class="lbl">sections</div>
+        </div>
+        <div class="stat">
+          <div class="num" id="rowCount">0</div>
+          <div class="lbl">rows</div>
+        </div>
+        <div class="stat">
+          <div class="num" id="pageCount">0</div>
+          <div class="lbl">pages</div>
+        </div>
       </div>
+
       <div class="result-head">
         <h2 id="resultName">result.json</h2>
-        <button class="btn-download" id="downloadBtn">
+        <button class="btn-download" id="downloadBtn" title="Download JSON file">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -278,39 +430,65 @@
           Download JSON
         </button>
       </div>
-      <pre id="preview"></pre>
+
+      <div class="preview-wrap">
+        <pre id="preview" aria-label="JSON preview"></pre>
+      </div>
     </section>
 
+    <!-- footer -->
     <footer>
-      Runs locally &middot; powered by the same <code>extract_tables()</code> as the CLI.
+      <p>
+        Runs entirely on your machine &middot; no data leaves your browser<br />
+        CLI: <code>pdf2json input.pdf</code> &middot;
+        <a href="https://github.com/jameski-star/pdf2json" target="_blank" rel="noopener">GitHub</a>
+      </p>
     </footer>
   </main>
 
   <script>
     (function () {
-      const dropzone = document.getElementById("dropzone");
+      const dropzone  = document.getElementById("dropzone");
       const fileInput = document.getElementById("fileInput");
-      const fileChip = document.getElementById("fileChip");
-      const fileName = document.getElementById("fileName");
+      const fileBar   = document.getElementById("fileBar");
+      const fileName  = document.getElementById("fileName");
+      const fileSize  = document.getElementById("fileSize");
+      const fileRemove = document.getElementById("fileRemove");
       const convertBtn = document.getElementById("convertBtn");
-      const errorBox = document.getElementById("errorBox");
-      const result = document.getElementById("result");
-      const preview = document.getElementById("preview");
+      const spellToggle = document.getElementById("spellToggle");
+      const errorBox  = document.getElementById("errorBox");
+      const result    = document.getElementById("result");
+      const preview   = document.getElementById("preview");
       const tableCount = document.getElementById("tableCount");
-      const rowCount = document.getElementById("rowCount");
+      const rowCount   = document.getElementById("rowCount");
+      const pageCount  = document.getElementById("pageCount");
       const resultName = document.getElementById("resultName");
       const downloadBtn = document.getElementById("downloadBtn");
 
-      let selectedFile = null;
-      let lastResult = null;
-      let lastFilename = "tables.json";
+      let selectedFile   = null;
+      let lastResult     = null;
+      let lastFilename   = "tables.json";
+      let spellEnabled   = true;
+
+      // ---- helpers ----
+      function fmtSize(bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+        return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+      }
 
       function showError(text) {
         errorBox.textContent = text;
         errorBox.style.display = "block";
+        errorBox.setAttribute("role", "alert");
       }
-      function clearError() { errorBox.style.display = "none"; }
+      function clearError() {
+        errorBox.style.display = "none";
+        errorBox.textContent = "";
+        errorBox.removeAttribute("role");
+      }
 
+      // ---- file handling ----
       function pickFile(file) {
         if (!file) return;
         if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -321,8 +499,21 @@
         result.classList.remove("show");
         selectedFile = file;
         fileName.textContent = file.name;
-        fileChip.classList.add("show");
+        fileSize.textContent = fmtSize(file.size);
+        fileBar.classList.add("show");
+        dropzone.classList.add("has-file");
         convertBtn.disabled = false;
+      }
+
+      function clearFile() {
+        selectedFile = null;
+        fileInput.value = "";
+        fileBar.classList.remove("show");
+        dropzone.classList.remove("has-file");
+        convertBtn.disabled = true;
+        clearError();
+        result.classList.remove("show");
+        lastResult = null;
       }
 
       // open file dialog
@@ -331,6 +522,9 @@
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
       });
       fileInput.addEventListener("change", (e) => pickFile(e.target.files[0]));
+
+      // file remove button
+      fileRemove.addEventListener("click", (e) => { e.stopPropagation(); clearFile(); });
 
       // drag & drop
       ["dragenter", "dragover"].forEach((evt) =>
@@ -350,7 +544,30 @@
         pickFile(file);
       });
 
-      // convert
+      // ---- spell toggle ----
+      function updateToggle() {
+        if (spellEnabled) {
+          spellToggle.classList.add("on");
+          spellToggle.setAttribute("aria-checked", "true");
+        } else {
+          spellToggle.classList.remove("on");
+          spellToggle.setAttribute("aria-checked", "false");
+        }
+      }
+
+      spellToggle.addEventListener("click", () => {
+        spellEnabled = !spellEnabled;
+        updateToggle();
+      });
+      spellToggle.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          spellEnabled = !spellEnabled;
+          updateToggle();
+        }
+      });
+
+      // ---- convert ----
       convertBtn.addEventListener("click", async () => {
         if (!selectedFile) return;
         clearError();
@@ -360,6 +577,7 @@
 
         const form = new FormData();
         form.append("file", selectedFile);
+        form.append("spell", spellEnabled ? "1" : "0");
 
         try {
           const res = await fetch("/convert", { method: "POST", body: form });
@@ -368,37 +586,56 @@
             showError(data.error || "Conversion failed.");
             return;
           }
-          lastResult = data.result;
+          lastResult   = data.result;
           lastFilename = data.filename;
           tableCount.textContent = data.section_count;
-          rowCount.textContent = data.row_count;
+          rowCount.textContent   = data.row_count;
+          pageCount.textContent  = data.page_count || "—";
           resultName.textContent = data.filename;
 
-          // preview: pretty JSON, truncated if huge
+          // syntax-highlighted preview (simple token colouring)
           const full = JSON.stringify(data.result, null, 2);
-          const LIMIT = 60000;
+          const LIMIT = 80000;
           if (full.length > LIMIT) {
-            preview.textContent = full.slice(0, LIMIT);
-            const note = document.createElement("span");
-            note.className = "truncated";
-            note.textContent = "\n\n… preview truncated — download for the full file.";
-            preview.appendChild(note);
+            preview.innerHTML = escapeHTML(full.slice(0, LIMIT))
+              + '<span class="truncated">&hellip; preview truncated &mdash; download for the full file.</span>';
           } else {
-            preview.textContent = full;
+            preview.innerHTML = highlightJSON(full);
           }
           result.classList.add("show");
         } catch (err) {
-          showError("Network error: " + err.message);
+          showError("Network error: " + (err.message || "could not reach the server."));
         } finally {
           convertBtn.classList.remove("loading");
           convertBtn.disabled = false;
         }
       });
 
-      // download
+      function escapeHTML(str) {
+        const div = document.createElement("div");
+        div.appendChild(document.createTextNode(str));
+        return div.innerHTML;
+      }
+
+      function highlightJSON(json) {
+        // Simple regex-based syntax highlighting for JSON preview
+        let out = escapeHTML(json);
+        out = out.replace(/^(\s*)"([^"]+)":/gm,
+          '$1<span class="key">"$2"</span>:');
+        out = out.replace(/: "([^"]*)"/g,
+          ': <span class="str">"$1"</span>');
+        out = out.replace(/: (-?\d+\.?\d*)/g,
+          ': <span class="num">$1</span>');
+        return out;
+      }
+
+      // ---- download ----
       downloadBtn.addEventListener("click", () => {
         if (!lastResult) return;
-        const blob = new Blob([JSON.stringify(lastResult, null, 2)], { type: "application/json" });
+        const blob = new Blob(
+          [JSON.stringify(lastResult, null, 2)],
+          { type: "application/json" }
+        );
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -407,6 +644,14 @@
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
+      });
+
+      // ---- keyboard shortcut: Ctrl+Enter to convert ----
+      document.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && selectedFile && !convertBtn.disabled) {
+          e.preventDefault();
+          convertBtn.click();
+        }
       });
     })();
   </script>

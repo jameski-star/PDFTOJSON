@@ -65,6 +65,7 @@ def convert():
             pass
 
     row_count = sum(len(s["rows"]) for s in sections)
+    page_count = max((s.get("page", 0) for s in sections), default=0)
     result = {
         "source": name,
         "section_count": len(sections),
@@ -75,6 +76,7 @@ def convert():
         filename=Path(name).with_suffix(".json").name,
         section_count=len(sections),
         row_count=row_count,
+        page_count=page_count,
         result=result,
     )
 
