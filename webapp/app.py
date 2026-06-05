@@ -32,7 +32,7 @@ MAX_MB = 50  # reject uploads larger than this
 
 # Absolute base URL for canonical links, Open Graph tags, and the sitemap.
 # Override per-deployment, e.g. SITE_URL=https://pdf2json.example.com.
-SITE_URL = os.environ.get("SITE_URL", "http://127.0.0.1:5000").rstrip("/")
+SITE_URL = os.environ.get("SITE_URL", "https://pdf2json-j5oh.onrender.com/").rstrip("/")
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
