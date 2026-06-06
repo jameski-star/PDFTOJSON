@@ -7,7 +7,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r webapp/requirements.txt
-    startCommand: gunicorn --chdir webapp app:app -b 0.0.0.0:$PORT --timeout 120 --workers 2
+    startCommand: gunicorn --chdir webapp app:app -b 0.0.0.0:$PORT --timeout 300 --workers 1
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
